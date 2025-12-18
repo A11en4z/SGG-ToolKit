@@ -1,6 +1,8 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import argparse
 import cv2
+import os
+import sys
 
 from maskrcnn_benchmark.config import cfg
 from predictor import COCODemo
@@ -10,9 +12,39 @@ import time
 
 def main():
     parser = argparse.ArgumentParser(description="PyTorch Object Detection Webcam Demo")
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.environ.setdefault("TORCH_HOME", "/data")
+    os.environ.setdefault("TORCH_MODEL_ZOO", "/data")
+
+    parser.add_argument(
+        "--camera-id",
+        type=int,
+        default=0,
+        help="OpenCV camera index",
+    )
+    parser.add_argument(
+        "--input-image",
+        default=None,
+        help="Path to a single image file for inference",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Path to save visualization when using --input-image",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="Show OpenCV window (requires GUI)",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Override cfg.MODEL.DEVICE (e.g. cpu, cuda)",
+    )
     parser.add_argument(
         "--config-file",
-        default="../configs/caffe2/e2e_mask_rcnn_R_50_FPN_1x_caffe2.yaml",
+        default="/data/SGG/SGG-ToolKit/configs/e2e_relation_X_101_32_8_FPN_1x_trans_base.yaml",
         metavar="FILE",
         help="path to config file",
     )
@@ -25,7 +57,7 @@ def main():
     parser.add_argument(
         "--min-image-size",
         type=int,
-        default=224,
+        default=800,
         help="Smallest size of the image to feed to the model. "
             "Model was trained with 800, which gives best results",
     )
@@ -53,6 +85,9 @@ def main():
     # load config from file and command-line arguments
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    if args.device is not None:
+        cfg.defrost()
+        cfg.MODEL.DEVICE = args.device
     cfg.freeze()
 
     # prepare object that handles inference plus adds predictions on top of image
@@ -64,16 +99,39 @@ def main():
         min_image_size=args.min_image_size,
     )
 
-    cam = cv2.VideoCapture(0)
+    if args.input_image is not None:
+        img = cv2.imread(args.input_image)
+        if img is None:
+            raise RuntimeError(f"Cannot read image: {args.input_image}")
+        composite = coco_demo.run_on_opencv_image(img)
+        if args.output is not None:
+            ok = cv2.imwrite(args.output, composite)
+            if not ok:
+                raise RuntimeError(f"Cannot write output image: {args.output}")
+        if args.show:
+            cv2.imshow("COCO detections", composite)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+        return
+
+    cam = cv2.VideoCapture(args.camera_id)
+    if not cam.isOpened():
+        sys.stderr.write(f"Cannot open camera with index {args.camera_id}\n")
+        return
     while True:
         start_time = time.time()
         ret_val, img = cam.read()
+        if not ret_val or img is None:
+            break
         composite = coco_demo.run_on_opencv_image(img)
         print("Time: {:.2f} s / img".format(time.time() - start_time))
-        cv2.imshow("COCO detections", composite)
-        if cv2.waitKey(1) == 27:
-            break  # esc to quit
-    cv2.destroyAllWindows()
+        if args.show:
+            cv2.imshow("COCO detections", composite)
+            if cv2.waitKey(1) == 27:
+                break
+    cam.release()
+    if args.show:
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

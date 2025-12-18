@@ -1,2 +1,14 @@
 
 .codegpt
+
+__pycache__/
+*.py[cod]
+*.so
+
+glove/
+Pretrained_Obj/
+Checkpoints/
+
+*.pth
+*.pt
+*.ckpt

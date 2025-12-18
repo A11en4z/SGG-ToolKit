@@ -232,7 +232,7 @@ Only_val : False
 Only_test : False
 mbs : 512
 ite_resume : 0
-Print_iter: 100
+Print_iter: 10
 
 val_outpath : None
 test_outpath : None
