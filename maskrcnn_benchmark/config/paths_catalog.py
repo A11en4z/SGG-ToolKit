@@ -7,7 +7,7 @@ import copy
 #
 class DatasetCatalog(object):
     # configure your dataset root here
-    DATA_DIR = "/media/dell/data1/WTZ/config_files_for_framework/datav3/STAR_SGG/"   # "/media/dell/data1/WTZ/RTPB-RM/datasets/"
+    DATA_DIR = "/gz-data/DIOR_STAR/"
     DATASETS = {
         "coco_2017_train": {
             "img_dir": "coco/train2017",
@@ -133,6 +133,12 @@ class DatasetCatalog(object):
             "dict_file": "STAR-SGG-dicts-with-attri.json",
             "image_file": "STAR_image_data_v1.json",
         },  
+        "DIOR_with_attribute": {
+            "img_dir": "images",
+            "roidb_file": "DIOR-SGG-with-attri.h5",
+            "dict_file": "DIOR-SGG-dicts-with-attri.json",
+            "image_file": "DIOR_image_data_v1.json",
+        },
     }
 
     @staticmethod
@@ -159,7 +165,7 @@ class DatasetCatalog(object):
                 factory="PascalVOCDataset",
                 args=args,
             )
-        elif ("VG" in name) or ('GQA' in name) or ('STAR' in name):
+        elif ("VG" in name) or ('GQA' in name) or ('STAR' in name) or ('DIOR' in name):
             # name should be something like VG_stanford_filtered_train
             p = name.rfind("_")
             name, split = name[:p], name[p+1:]

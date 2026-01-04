@@ -90,9 +90,8 @@ class ROIRelationHead(torch.nn.Module):
         self.type = self.cfg.Type
 
         
-        self.PPG = PPG()
-
-        self.PPG_HBB = PPG_HBB()
+        self.PPG = None
+        self.PPG_HBB = None
 
 
     
@@ -233,9 +232,27 @@ class ROIRelationHead(torch.nn.Module):
                     print('num_PPG_before:',len(rel_pair_idxs[0]))  
                     if not self.training :
                         if "OBB" in self.type:
-                            rel_pair_idxs=self.PPG.sx_Oriented(rel_pair_idxs[0],proposals)
+                            if self.PPG is None:
+                                try:
+                                    self.PPG = PPG()
+                                except Exception:
+                                    self.PPG = None
+                            if self.PPG is not None:
+                                rel_pair_idxs = self.PPG.sx_Oriented(rel_pair_idxs[0], proposals)
+                            else:
+                                id_num = torch.randperm(rel_pair_idxs[0].size(0))
+                                rel_pair_idxs = [rel_pair_idxs[0][id_num[:10000]]]
                         else:
-                            rel_pair_idxs=self.PPG_HBB.sx_HBB(rel_pair_idxs[0],proposals)
+                            if self.PPG_HBB is None:
+                                try:
+                                    self.PPG_HBB = PPG_HBB()
+                                except Exception:
+                                    self.PPG_HBB = None
+                            if self.PPG_HBB is not None:
+                                rel_pair_idxs = self.PPG_HBB.sx_HBB(rel_pair_idxs[0], proposals)
+                            else:
+                                id_num = torch.randperm(rel_pair_idxs[0].size(0))
+                                rel_pair_idxs = [rel_pair_idxs[0][id_num[:10000]]]
                         print('num_PPG_after:',len(rel_pair_idxs[0]))
 
         

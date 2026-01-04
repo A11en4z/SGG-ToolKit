@@ -17,6 +17,8 @@ def rel_vectors(names, wv_dir, wv_type='glove.6B', wv_dim=300):
 
     vectors = torch.Tensor(len(names), wv_dim)  # 51, 200
     vectors.normal_(0, 1)
+    if not wv_dict:
+        return vectors
     for i, token in enumerate(names):
         if i == 0:
             continue
@@ -35,8 +37,9 @@ def rel_vectors(names, wv_dir, wv_type='glove.6B', wv_dim=300):
                     s_vec += wv_arr[wv_index]
                 else:
                     print("fail on {}".format(token))
-            s_vec /= ss
-            vectors[i] = s_vec
+            if ss > 0:
+                s_vec /= ss
+                vectors[i] = s_vec
 
     return vectors
 
@@ -210,6 +213,8 @@ def obj_edge_vectors(names, wv_dir, wv_type='glove.6B', wv_dim=300):
 
     vectors = torch.Tensor(len(names), wv_dim)
     vectors.normal_(0,1)
+    if not wv_dict:
+        return vectors
 
     for i, token in enumerate(names):
         wv_index = wv_dict.get(token, None)
@@ -232,6 +237,8 @@ def obj_edge_vectors(names, wv_dir, wv_type='glove.6B', wv_dim=300):
 
     vectors = torch.Tensor(len(names), wv_dim)
     vectors.normal_(0,1)
+    if not wv_dict:
+        return vectors
 
     for i, token in enumerate(names):
         wv_index = wv_dict.get(token, None)
@@ -257,6 +264,9 @@ def load_word_vectors(root, wv_type, dim):
         'glove.twitter.27B': 'http://nlp.stanford.edu/data/glove.twitter.27B.zip',
         'glove.6B': 'http://nlp.stanford.edu/data/glove.6B.zip',
         }
+    dim_int = dim if isinstance(dim, int) else int(str(dim).replace('d', ''))
+    if not os.path.isdir(root):
+        return {}, torch.empty((0, dim_int)), dim_int
     if isinstance(dim, int):
         dim = str(dim) + 'd'
     fname = os.path.join(root, wv_type + '.' + dim)
@@ -274,21 +284,9 @@ def load_word_vectors(root, wv_type, dim):
         cm = open(fname_txt, 'rb')
         cm = [line for line in cm]
     elif os.path.basename(wv_type) in URL:
-        url = URL[wv_type]
-        print('downloading word vectors from {}'.format(url))
-        filename = os.path.basename(fname)
-        if not os.path.exists(root):
-            os.makedirs(root)
-        with tqdm(unit='B', unit_scale=True, miniters=1, desc=filename) as t:
-            fname, _ = urlretrieve(url, fname, reporthook=reporthook(t))
-            with zipfile.ZipFile(fname, "r") as zf:
-                print('extracting word vectors into {}'.format(root))
-                zf.extractall(root)
-        if not os.path.isfile(fname + '.txt'):
-            raise RuntimeError('no word vectors of requested dimension found')
-        return load_word_vectors(root, wv_type, dim)
+        return {}, torch.empty((0, dim_int)), dim_int
     else:
-        raise RuntimeError('unable to load word vectors')
+        return {}, torch.empty((0, dim_int)), dim_int
 
     wv_tokens, wv_arr, wv_size = [], array.array('d'), None
     if cm is not None:

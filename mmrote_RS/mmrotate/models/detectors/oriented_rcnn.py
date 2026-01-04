@@ -4,7 +4,6 @@ import torch
 from ..builder import ROTATED_DETECTORS
 from .two_stage import RotatedTwoStageDetector
 
-from maskrcnn_benchmark.modeling.detector.roted_RS import RotatedDetector_large
 from maskrcnn_benchmark.modeling.detector.two_stage_RS_multi_12 import RotatedTwoStageDetector_Mul
 # from maskrcnn_benchmark.modeling.detector.roted import ROTATED
 

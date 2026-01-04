@@ -111,6 +111,10 @@ class RelationSampling(object):
             img_rel_idxs = torch.cat((tgt_pair_idxs, tgt_bg_idxs), dim=0)  #### 分配前后背景
             img_rel_labels = torch.cat((tgt_rel_labs.long(), torch.zeros(tgt_bg_idxs.shape[0], device=device).long()), dim=0).contiguous().view(-1)
 
+            if img_rel_idxs.numel() == 0:
+                img_rel_idxs = torch.zeros((1, 2), dtype=torch.int64, device=device)
+                img_rel_labels = torch.zeros((1,), dtype=torch.int64, device=device)
+
             rel_idx_pairs.append(img_rel_idxs)
             rel_labels.append(img_rel_labels)
         return proposals, rel_labels, rel_idx_pairs, rel_sym_binarys  
@@ -199,6 +203,8 @@ class RelationSampling(object):
             rel_possibility[:, prp_lab == 0] = 0
 
             img_rel_triplets, binary_rel = self.motif_rel_fg_bg_sampling(device, tgt_rel_matrix, ious, is_match, rel_possibility)
+            if img_rel_triplets.numel() == 0:
+                img_rel_triplets = torch.zeros((1, 3), dtype=torch.int64, device=device)
             rel_idx_pairs.append(img_rel_triplets[:, :2]) # (num_rel, 2),  (sub_idx, obj_idx)
             rel_labels.append(img_rel_triplets[:, 2]) # (num_rel, )
             rel_sym_binarys.append(binary_rel)

@@ -688,22 +688,21 @@ def load_image_filenames(img_dir, image_file):
 
     with open(image_file, "r") as f:
         im_data = json.load(f)
-    
+
+    missing = [img.get("image_id") for img in im_data if not img.get("file_name")]
+    if missing:
+        raise ValueError(
+            f"`file_name` is required for every image entry in {image_file}. "
+            f"Missing count={len(missing)}; example image_id={missing[0]}"
+        )
 
     fns = []
-    img_info = []
-    for i, img in enumerate(im_data):
+    for img in im_data:
+        file_name = img["file_name"]
+        filename = file_name if os.path.isabs(file_name) else os.path.join(img_dir, file_name)
+        fns.append(filename)
 
-        basename = str(img["image_id"]).zfill(4) + ".png"
-
-        filename = os.path.join(img_dir, basename)
-
-        if os.path.exists(filename):
-            fns.append(filename)
-            img_info.append(img)
-
-
-    return fns, img_info
+    return fns, im_data
 
 
 def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter_non_overlap, train_index=None,
@@ -730,39 +729,50 @@ def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter
     val_index = [988, 112, 536, 986, 753, 1236, 888, 1154, 778, 189, 80, 936, 938, 1024, 1004, 453, 852, 1020, 28, 360, 1271, 1028, 1076, 1184, 213, 199, 208, 866, 1026, 998, 121, 238, 122, 741, 923, 1022, 664, 822, 1031, 71, 935, 160, 787, 7, 1083, 887, 526, 399, 53, 742, 929, 13, 612, 875, 1069, 697, 837, 176, 95, 786, 896, 191, 241, 217, 820, 885, 886, 6, 1032, 716, 1018, 1186, 598, 452, 163, 909, 1102, 1013, 17, 407, 882, 396, 824, 1214, 722, 924, 206, 74, 1001, 39, 179, 198, 1030, 993, 400, 1234, 398, 29, 1023, 676, 926, 982, 984, 521, 195, 523, 893, 675, 890, 707, 999, 691, 1263, 656, 465, 1029, 663, 1010, 1233, 193, 990, 748, 747, 1257, 731, 805, 671, 242, 451, 8, 721, 111, 38, 894, 895, 1005, 791, 904, 1196, 46, 524, 1172, 897, 970, 14, 1065, 454, 481, 1000, 907, 1199, 898, 879, 825, 1011, 794, 2, 1008, 687, 717, 525, 869, 165, 464, 212, 218, 194, 800, 528, 1003, 797, 1025, 1007, 944, 1093, 744, 599, 224, 3, 720, 1021, 200, 233, 995, 1146, 26, 1006, 726, 606, 204, 466, 244, 1019, 677, 937, 994, 9, 1027, 851, 763, 1124, 406, 873, 771, 600, 1088, 246, 1192, 830, 662, 859, 520, 157, 758, 216, 836, 397, 870, 63, 1207, 58, 425, 776, 939, 661, 395, 695, 650, 749, 1002, 119, 1209, 989, 605, 1017, 1015, 1188, 823, 185, 1238, 738, 527, 1084, 733, 50]
     test_index = [4, 5 , 10, 12, 15, 18, 20, 21, 27, 31, 32, 34, 35, 36, 40, 41, 45, 52, 61, 64, 65, 66, 67, 69, 73, 77, 86, 104, 108, 115, 116, 117, 126, 132, 133, 136, 141, 143, 158, 162, 164, 167, 174, 177, 183, 184, 186, 187, 188, 190, 196, 197, 201, 203, 205, 207, 209, 214, 222, 223, 225, 228, 229, 230, 231, 232, 235, 237, 243, 245, 248, 252, 264, 265, 267, 268, 272, 276, 280, 281, 283, 288, 292, 294, 302, 305, 307, 308, 312, 314, 318, 323, 325, 327, 333, 334, 335, 340, 341, 346, 353, 365, 366, 369, 370, 372, 380, 394, 440, 456, 480, 514, 530, 532, 534, 535, 539, 543, 545, 549, 550, 555, 557, 558, 564, 565, 569, 573, 591, 595, 596, 597, 601, 602, 603, 604, 613, 621, 623, 626, 660, 662, 666, 670, 673, 676, 681, 688, 689, 701, 704, 711, 717, 723, 729, 730, 739, 740, 745, 748, 755, 756, 760, 767, 773, 788, 793, 795, 798, 809, 811, 815, 823, 824, 825, 827, 837, 838, 839, 842, 847, 853, 855, 857, 862, 865, 868, 871, 873, 910, 911, 914, 916, 918, 920, 945, 949, 950, 959, 960, 961, 962, 975, 976, 977, 978, 989, 991, 1009, 1017, 1044, 1062, 1068, 1074, 1077, 1080, 1081, 1082, 1085, 1086, 1087, 1089, 1091, 1095, 1098, 1099, 1100, 1101, 1103, 1104, 1105, 1106, 1112, 1123, 1138, 1143, 1147, 1150, 1151, 1152, 1155, 1161, 1162, 1163, 1173, 1174, 1175, 1176, 1177, 1179, 1180, 1181, 1183, 1191, 1194, 1200, 1213, 1215, 1232, 1239, 1250, 1255, 1256, 1265]
     
-    print("Train, Val, Test: ", len(train_index), len(val_index), len(test_index))
-
     roi_h5 = h5py.File(roidb_file, 'r')
     data_split = roi_h5['split'][:]
-    split_mask = np.zeros_like(data_split).astype(bool)
+    split_values = np.unique(data_split)
+
+    if split == 'test':
+        split_flag = 2 if 2 in split_values else int(split_values.max())
+    elif split == 'val':
+        split_flag = 1 if 1 in split_values else 0 if 0 in split_values else int(split_values.min())
+    else:
+        split_flag = 0 if 0 in split_values else int(split_values.min())
+
+    split_mask = data_split == split_flag
+
+    split_mask &= roi_h5['img_to_first_box'][:] >= 0
+    if filter_empty_rels:
+        split_mask &= roi_h5['img_to_first_rel'][:] >= 0
 
     image_index = np.where(split_mask)[0]
-    if split == "train":
-        split_mask[train_index] = True
-        image_index = np.where(split_mask)[0]
-    elif split == "val":
-        split_mask[val_index] = True
-        image_index = np.where(split_mask)[0]
-    else:
-        split_mask[test_index] = True    
-        image_index = np.where(test_index)[0]
+    if num_im > -1:
+        image_index = image_index[:num_im]
 
+    if num_val_im > 0:
+        if split == 'val':
+            image_index = image_index[:num_val_im]
+        elif split == 'train' and split_flag == 0:
+            image_index = image_index[num_val_im:]
+
+    split_mask = np.zeros_like(data_split).astype(bool)
+    split_mask[image_index] = True
+
+    box_scales = []
+    for key in roi_h5.keys():
+        if not key.startswith('boxes_'):
+            continue
+        suffix = key.split('_', 1)[1]
+        if suffix.isdigit():
+            box_scales.append(int(suffix))
+    box_scale = 800 if 800 in box_scales else (max(box_scales) if box_scales else BOX_SCALE)
 
     # Get box information
     all_labels = roi_h5['labels'][:, 0]
     all_attributes = roi_h5['attributes'][:, :]
-    all_boxes = roi_h5['boxes_{}'.format(BOX_SCALE)][:]  # cx,cy,w,h
-
-    all_ori = roi_h5['segmentation_{}'.format(BOX_SCALE)][:]  ### 外接矩形
-
-    #### all keys
-    ...
-    ['active_object_mask', 'attributes', 'boxes_1000', 'boxes_2000', 'img_to_first_box', 
-     'img_to_first_rel', 'img_to_first_seg', 'img_to_last_box', 'img_to_last_rel',
-       'img_to_last_seg', 'labels', 'predicates', 'relationships', 'segmentation_1000', 'segmentation_2000', 'split']
-    ...
-
-    ####
+    all_boxes = roi_h5['boxes_{}'.format(box_scale)][:]  # cx,cy,w,h
+    all_ori = roi_h5['segmentation_{}'.format(box_scale)][:]  ### 外接矩形
     assert np.all(all_boxes[:, :2] >= 0)  # sanity check
     ###
     for i, box in enumerate(all_boxes):
@@ -823,12 +833,10 @@ def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter
         relationships.append(rels)
     
     #### 恢复出原始
-        
-    for id in range(len(image_index)):
-        img_in = img_info[image_index[id]] 
-        w, h = img_in['width'], img_in['height'] 
-        boxes[id] =  boxes[id] / BOX_SCALE * 6000
-        poly[id] = poly[id] / BOX_SCALE * 6000
+    scale_factor = 6000.0 / float(box_scale)
+    for i in range(len(boxes)):
+        boxes[i] = boxes[i] * scale_factor
+        poly[i] = poly[i] * scale_factor
 
 
 
@@ -999,4 +1007,3 @@ def load_graphs_CV(roidb_file, split, num_im, num_val_im, filter_empty_rels, fil
         relationships.append(rels)
 
     return split_mask, boxes, gt_classes, gt_attributes, relationships
-

@@ -194,6 +194,7 @@ class RelationFeatureExtractor(nn.Module):
         self.cfg = cfg.clone()
         # should corresponding to obj_feature_map function in neural-motifs
         resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
+        self.pooler_resolution = resolution
         pool_all_levels = cfg.MODEL.ROI_RELATION_HEAD.POOLING_ALL_LEVELS
         
         if cfg.MODEL.ATTRIBUTE_ON:
@@ -240,15 +241,17 @@ class RelationFeatureExtractor(nn.Module):
         head_boxes = head_proposal.bbox
         tail_boxes = tail_proposal.bbox
 
-        h_cx, h_cy = np.array(head_boxes[:, 0].cpu()), np.array(head_boxes[:, 1].cpu())
-        t_cx, t_cy = np.array(tail_boxes[:, 0].cpu()), np.array(tail_boxes[:, 1].cpu())
+        h_cx = head_boxes[:, 0].detach().cpu().numpy()
+        h_cy = head_boxes[:, 1].detach().cpu().numpy()
+        t_cx = tail_boxes[:, 0].detach().cpu().numpy()
+        t_cy = tail_boxes[:, 1].detach().cpu().numpy()
         
         # head_boxes1 = copy.deepcopy(head_boxes)
         # tail_boxes1 = copy.deepcopy(tail_boxes)
         # h_poly = np.array([obb2poly_le90(box)[0] for box in head_boxes]).reshape((-1, 4, 2))
         # t_poly = np.array([obb2poly_le90(box)[0] for box in tail_boxes]).reshape((-1, 4, 2))
-        h_poly = np.array(obb2poly_le90_batch(head_boxes))
-        t_poly = np.array(obb2poly_le90_batch(tail_boxes))
+        h_poly = np.array(obb2poly_le90_batch(head_boxes.detach().cpu()))
+        t_poly = np.array(obb2poly_le90_batch(tail_boxes.detach().cpu()))
         '''
         h_poly[0][0][0]
         tensor([16.4138, 10.7253, 16.5100, 10.8948, 16.3681, 10.9753, 16.2719, 10.8059])
@@ -293,6 +296,21 @@ class RelationFeatureExtractor(nn.Module):
 
     def forward(self, x, proposals, rel_pair_idxs=None,OBj = None):
         device = x[0].device
+        if rel_pair_idxs is None or len(rel_pair_idxs) == 0:
+            if self.separate_spatial:
+                empty_region = torch.empty((0, self.feature_extractor.out_channels), device=device, dtype=x[0].dtype)
+                empty_spatial = torch.empty((0, self.feature_extractor.out_channels), device=device, dtype=x[0].dtype)
+                return (empty_region, empty_spatial)
+            return torch.empty((0, self.out_channels), device=device, dtype=x[0].dtype)
+
+        total_num_rel = sum(int(r.shape[0]) for r in rel_pair_idxs)
+        if total_num_rel == 0:
+            if self.separate_spatial:
+                empty_region = torch.empty((0, self.feature_extractor.out_channels), device=device, dtype=x[0].dtype)
+                empty_spatial = torch.empty((0, self.feature_extractor.out_channels), device=device, dtype=x[0].dtype)
+                return (empty_region, empty_spatial)
+            return torch.empty((0, self.out_channels), device=device, dtype=x[0].dtype)
+
         union_proposals = []
         rect_inputs = []
         # start_time = time.time()
@@ -402,12 +420,19 @@ class RelationFeatureExtractor(nn.Module):
             '''
 
             #rect_input = torch.stack((head1, tail1), dim=1).cuda()
-            rect_input = torch.stack((head_rect, tail_rect), dim=1).cuda() # (num_rel, 4, rect_size, rect_size)
+            rect_input = torch.stack((head_rect, tail_rect), dim=1).to(device) # (num_rel, 4, rect_size, rect_size)
             rect_inputs.append(rect_input)
        
         # rectangle feature. size (total_num_rel, in_channels, POOLER_RESOLUTION, POOLER_RESOLUTION)
         rect_inputs = torch.cat(rect_inputs, dim=0)
-        rect_features = self.rect_conv(rect_inputs)
+        if rect_inputs.shape[0] == 0:
+            rect_features = torch.empty(
+                (0, self.rect_conv[4].out_channels, self.pooler_resolution, self.pooler_resolution),
+                device=device,
+                dtype=x[0].dtype,
+            )
+        else:
+            rect_features = self.rect_conv(rect_inputs)
 
 
         # union visual feature. size (total_num_rel, in_channels, POOLER_RESOLUTION, POOLER_RESOLUTION)
@@ -417,7 +442,7 @@ class RelationFeatureExtractor(nn.Module):
             for kk in range(len(union_proposals)):
                 rbox.append(union_proposals[kk].bbox)
             # 提取特征
-            rois = self.rbbox2roi(rbox).cuda()
+            rois = self.rbbox2roi(rbox).to(device)
             union_vis_features = OBj._bbox_forward(x, rois, flag = True )
 
         else:
@@ -452,6 +477,4 @@ def make_roi_relation_feature_extractor(cfg, in_channels):
         cfg.MODEL.ROI_RELATION_HEAD.FEATURE_EXTRACTOR
     ]
     return func(cfg, in_channels)
-
-
 

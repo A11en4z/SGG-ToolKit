@@ -636,11 +636,25 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
     print_first_grad = True
 
     if cfg.Only_val:
-        val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder = cfg.val_outpath)
+        output_folder = getattr(cfg, "val_outpath", None)
+        if output_folder in ("None", "none", "null", "NULL", ""):
+            output_folder = None
+        if output_folder is None and cfg.OUTPUT_DIR:
+            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", "val")
+        if output_folder:
+            mkdir(output_folder)
+        val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder=output_folder)
         sys.exit() 
 
     if cfg.Only_test:
-        val_result = run_val(cfg, model, test_data_loaders, distributed, logger, output_folder = cfg.test_outpath)
+        output_folder = getattr(cfg, "test_outpath", None)
+        if output_folder in ("None", "none", "null", "NULL", ""):
+            output_folder = None
+        if output_folder is None and cfg.OUTPUT_DIR:
+            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", "test")
+        if output_folder:
+            mkdir(output_folder)
+        val_result = run_val(cfg, model, test_data_loaders, distributed, logger, output_folder=output_folder)
         sys.exit() 
 
 
@@ -728,7 +742,18 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         
         val_result = None 
         if iteration % cfg.SOLVER.VAL_PERIOD == 0:  # 
-             val_result = run_val(cfg, model, val_data_loaders, distributed, logger,output_folder = cfg.outpath)
+             output_folder = getattr(cfg, "val_outpath", None)
+             if output_folder in ("None", "none", "null", "NULL", ""):
+                 output_folder = None
+             if output_folder is None:
+                 output_folder = getattr(cfg, "outpath", None)
+             if output_folder in ("None", "none", "null", "NULL", ""):
+                 output_folder = None
+             if output_folder is None and cfg.OUTPUT_DIR:
+                 output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", "val")
+             if output_folder:
+                 mkdir(output_folder)
+             val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder=output_folder)
      
 
         if cfg.SOLVER.SCHEDULE.TYPE == "WarmupReduceLROnPlateau":
@@ -784,6 +809,10 @@ def run_val(cfg, model, val_data_loaders, distributed, logger,m = None,ite = Non
     dataset_names = cfg.DATASETS.VAL
     val_result = []
     for dataset_name, val_data_loader in zip(dataset_names, val_data_loaders):
+        dataset_output_folder = output_folder
+        if output_folder:
+            dataset_output_folder = os.path.join(output_folder, dataset_name)
+            mkdir(dataset_output_folder)
         dataset_result = inference(
             cfg,
             model,
@@ -794,7 +823,7 @@ def run_val(cfg, model, val_data_loaders, distributed, logger,m = None,ite = Non
             device=cfg.MODEL.DEVICE,
             expected_results=cfg.TEST.EXPECTED_RESULTS,
             expected_results_sigma_tol=cfg.TEST.EXPECTED_RESULTS_SIGMA_TOL,
-            output_folder=output_folder,
+            output_folder=dataset_output_folder,
             logger=logger,
             m=m,
             val=val,
@@ -923,6 +952,28 @@ def main(debug=False):
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     # cfg.freeze()
+
+    try:
+        from maskrcnn_benchmark.utils.imports import import_file
+        from maskrcnn_benchmark.data.datasets.visual_genome import load_info
+
+        paths_catalog = import_file(
+            "maskrcnn_benchmark.config.paths_catalog", cfg.PATHS_CATALOG, True
+        )
+        DatasetCatalog = paths_catalog.DatasetCatalog
+        dataset_names = cfg.DATASETS.TRAIN
+        if isinstance(dataset_names, str):
+            dataset_names = (dataset_names,)
+        if dataset_names:
+            data = DatasetCatalog.get(dataset_names[0], cfg)
+            dict_file = data.get("args", {}).get("dict_file")
+            if dict_file and os.path.exists(dict_file):
+                ind_to_classes, ind_to_predicates, ind_to_attributes, *_ = load_info(dict_file)
+                cfg.MODEL.ROI_BOX_HEAD.NUM_CLASSES = len(ind_to_classes)
+                cfg.MODEL.ROI_RELATION_HEAD.NUM_CLASSES = len(ind_to_predicates)
+                cfg.MODEL.ROI_ATTRIBUTE_HEAD.NUM_ATTRIBUTES = len(ind_to_attributes)
+    except Exception:
+        pass
 
     output_dir = cfg.OUTPUT_DIR
     if output_dir:

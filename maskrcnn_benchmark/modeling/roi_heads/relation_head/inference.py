@@ -124,17 +124,21 @@ class PostProcessor(nn.Module):
                 boxlist.add_field('pred_attributes', att_prob)
             
             # sorting triples according to score production
-            obj_scores0 = obj_scores[rel_pair_idx[:, 0]]
-            obj_scores1 = obj_scores[rel_pair_idx[:, 1]]
-            rel_class_prob = F.softmax(rel_logit, -1)
-            rel_scores, rel_class = rel_class_prob[:, 1:].max(dim=1)
-            rel_class = rel_class + 1
-            # TODO Kaihua: how about using weighted some here?  e.g. rel*1 + obj *0.8 + obj*0.8
-            triple_scores = rel_scores * obj_scores0 * obj_scores1
-            _, sorting_idx = torch.sort(triple_scores.view(-1), dim=0, descending=True)
-            rel_pair_idx = rel_pair_idx[sorting_idx]
-            rel_class_prob = rel_class_prob[sorting_idx]
-            rel_labels = rel_class[sorting_idx]
+            if rel_pair_idx.numel() == 0 or rel_logit.numel() == 0:
+                rel_pair_idx = rel_pair_idx.new_empty((0, 2))
+                rel_class_prob = rel_logit.new_empty((0, rel_logit.shape[1]))
+                rel_labels = rel_pair_idx.new_empty((0,), dtype=torch.int64)
+            else:
+                obj_scores0 = obj_scores[rel_pair_idx[:, 0]]
+                obj_scores1 = obj_scores[rel_pair_idx[:, 1]]
+                rel_class_prob = F.softmax(rel_logit, -1)
+                rel_scores, rel_class = rel_class_prob[:, 1:].max(dim=1)
+                rel_class = rel_class + 1
+                triple_scores = rel_scores * obj_scores0 * obj_scores1
+                _, sorting_idx = torch.sort(triple_scores.view(-1), dim=0, descending=True)
+                rel_pair_idx = rel_pair_idx[sorting_idx]
+                rel_class_prob = rel_class_prob[sorting_idx]
+                rel_labels = rel_class[sorting_idx]
 
             boxlist.add_field('rel_pair_idxs', rel_pair_idx) # (#rel, 2)
             boxlist.add_field('pred_rel_scores', rel_class_prob) # (#rel, #rel_class)

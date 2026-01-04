@@ -26,14 +26,17 @@ class sema_sx(nn.Module):
 
     def sx(self,rel_pair_idxs,obj, flag_labels = None):
         
+        if rel_pair_idxs.numel() == 0:
+            return [rel_pair_idxs]
+
         cp_rel_pair_idxs = copy.deepcopy(rel_pair_idxs)
         heads = obj[rel_pair_idxs[:, 0]].long()
         tails = obj[rel_pair_idxs[:, 1]].long()
-        tep = torch.tensor(self.mt)
+        tep = torch.as_tensor(self.mt, device=heads.device)
         mt_list = tep[heads, tails]
         row_sums = torch.sum(mt_list, dim=1)
         zero_positions = torch.nonzero(row_sums == 0, as_tuple=True)[0]
-        mask = torch.ones(len(rel_pair_idxs), dtype=bool)
+        mask = torch.ones(len(rel_pair_idxs), dtype=torch.bool, device=rel_pair_idxs.device)
     
 
    
@@ -41,10 +44,10 @@ class sema_sx(nn.Module):
         mask[zero_positions] = False
         filtered_rel_pair_idxs = rel_pair_idxs[mask].long()
 
-        print("filtered / all: ", str(len(zero_positions )) +  "/" + str(len(cp_rel_pair_idxs)), " save_ratio: ", len(filtered_rel_pair_idxs) / len(cp_rel_pair_idxs))
+        denom = len(cp_rel_pair_idxs)
+        save_ratio = (len(filtered_rel_pair_idxs) / denom) if denom > 0 else 0.0
+        print("filtered / all: ", str(len(zero_positions )) +  "/" + str(len(cp_rel_pair_idxs)), " save_ratio: ", save_ratio)
             
-        return [filtered_rel_pair_idxs.cuda()]
+        return [filtered_rel_pair_idxs.to(rel_pair_idxs.device)]
 
         
-
-

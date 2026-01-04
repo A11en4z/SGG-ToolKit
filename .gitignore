@@ -5,9 +5,28 @@ __pycache__/
 *.py[cod]
 *.so
 
-glove/
-Pretrained_Obj/
-Checkpoints/
+# Data / weights
+/glove/
+/Pretrained_Obj/
+/Checkpoints/
+
+# Experiment outputs
+/output/
+/work_dirs/
+/inference/
+
+# Build artifacts
+/build/
+/dist/
+*.egg-info/
+
+# Logs / caches
+*.log
+*.log.json
+*.cache
+*.pkl
+*.npy
+*.npz
 
 *.pth
 *.pt

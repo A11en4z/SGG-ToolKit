@@ -181,9 +181,6 @@ class RPCM(nn.Module):
     def __init__(self, config, in_channels):
         super(RPCM, self).__init__()
 
-        self.num_obj_cls = config.MODEL.ROI_BOX_HEAD.NUM_CLASSES
-        self.num_att_cls = config.MODEL.ROI_ATTRIBUTE_HEAD.NUM_ATTRIBUTES
-        self.num_rel_cls = config.MODEL.ROI_RELATION_HEAD.NUM_CLASSES
         self.cfg = config
 
         assert in_channels is not None
@@ -197,9 +194,14 @@ class RPCM(nn.Module):
 
         obj_classes, rel_classes, att_classes = statistics['obj_classes'], statistics['rel_classes'], statistics[
             'att_classes']
-        assert self.num_obj_cls == len(obj_classes)
-        # assert self.num_att_cls == len(att_classes)
-        assert self.num_rel_cls == len(rel_classes)
+        config.MODEL.ROI_BOX_HEAD.NUM_CLASSES = len(obj_classes)
+        config.MODEL.ROI_RELATION_HEAD.NUM_CLASSES = len(rel_classes)
+        config.MODEL.ROI_ATTRIBUTE_HEAD.NUM_ATTRIBUTES = len(att_classes)
+
+        self.num_obj_cls = config.MODEL.ROI_BOX_HEAD.NUM_CLASSES
+        self.num_att_cls = config.MODEL.ROI_ATTRIBUTE_HEAD.NUM_ATTRIBUTES
+        self.num_rel_cls = config.MODEL.ROI_RELATION_HEAD.NUM_CLASSES
+
         self.obj_classes = obj_classes
         self.rel_classes = rel_classes
         self.num_obj_classes = len(obj_classes)
@@ -492,17 +494,26 @@ class RPCM(nn.Module):
         
         predicate_proto = self.W_pred(self.rel_embed.weight)  # c = Wp x tp  i.e., semantic prototypes
 
-               
         predicate_proto1 = predicate_proto
         predicate_proto_np = predicate_proto.detach().cpu().numpy()
         background_class = predicate_proto_np[0]
         other_classes = predicate_proto_np[1:]
 
-        kmeans = KMeans(n_clusters= self.Par-1, n_init=10, random_state=0).fit(other_classes)
-        labels = kmeans.labels_
+        effective_par = min(int(self.Par), int(predicate_proto_np.shape[0]))
+        if other_classes.shape[0] == 0:
+            new_predicates = background_class[None, :]
+        else:
+            n_clusters = min(max(1, effective_par - 1), int(other_classes.shape[0]))
+            if n_clusters >= other_classes.shape[0]:
+                centers = other_classes
+            else:
+                kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(other_classes)
+                centers = kmeans.cluster_centers_
+            new_predicates = np.vstack((background_class, centers))
 
-        new_predicates = np.vstack((background_class, kmeans.cluster_centers_))
-        predicate_proto2 = torch.Tensor(new_predicates).cuda()
+        predicate_proto2 = torch.as_tensor(
+            new_predicates, dtype=predicate_proto.dtype, device=predicate_proto.device
+        )
         rel_rep1 = self.norm_rel_rep(self.dropout_rel_rep(torch.relu(self.linear_rel_rep(rel_rep1))) + rel_rep1)
         rel_rep1 = self.project_head(self.dropout_rel(torch.relu(rel_rep1)))   
    
@@ -529,9 +540,11 @@ class RPCM(nn.Module):
             simil_mat2 = predicate_proto_norm2 @ target_rpredicate_proto_norm2.t() # Semantic Matrix S = C_norm @ C_norm.T
 
 
-            l21_1 = torch.norm(torch.norm(simil_mat1, p=2, dim=1), p=1) / (59*59)   
+            num_rel = int(predicate_proto_norm1.size(0))
+            num_par = int(predicate_proto_norm2.size(0))
 
-            l21_2 = torch.norm(torch.norm(simil_mat2, p=2, dim=1), p=1) / ( self.Par * self.Par ) 
+            l21_1 = torch.norm(torch.norm(simil_mat1, p=2, dim=1), p=1) / (num_rel * num_rel)
+            l21_2 = torch.norm(torch.norm(simil_mat2, p=2, dim=1), p=1) / (num_par * num_par)
             
             add_losses.update({"l21_1_loss": l21_1})  # Le_sim = ||S||_{2,1}
             add_losses.update({"l21_2_loss": l21_2})
@@ -541,10 +554,10 @@ class RPCM(nn.Module):
             
             ### Prototype Regularization  ---- Euclidean distance 51 --31 1124
             gamma2 = 7.0
-            predicate_proto_a1 = predicate_proto1.unsqueeze(dim=1).expand(-1, 59, -1) 
-            predicate_proto_b1 = predicate_proto1.detach().unsqueeze(dim=0).expand(59, -1, -1)
-            predicate_proto_a2 = predicate_proto2.unsqueeze(dim=1).expand(-1, self.Par, -1) 
-            predicate_proto_b2 = predicate_proto2.detach().unsqueeze(dim=0).expand( self.Par , -1, -1)
+            predicate_proto_a1 = predicate_proto1.unsqueeze(dim=1).expand(-1, num_rel, -1)
+            predicate_proto_b1 = predicate_proto1.detach().unsqueeze(dim=0).expand(num_rel, -1, -1)
+            predicate_proto_a2 = predicate_proto2.unsqueeze(dim=1).expand(-1, num_par, -1)
+            predicate_proto_b2 = predicate_proto2.detach().unsqueeze(dim=0).expand(num_par, -1, -1)
             proto_dis_mat1 = (predicate_proto_a1 - predicate_proto_b1).norm(dim=2) ** 2# Distance Matrix D, dij = ||ci - cj||_2^2
             proto_dis_mat2 = (predicate_proto_a2 - predicate_proto_b2).norm(dim=2) ** 2  
             
@@ -552,8 +565,8 @@ class RPCM(nn.Module):
             sorted_proto_dis_mat2, _ = torch.sort(proto_dis_mat2, dim=1)
             topK_proto_dis1 = sorted_proto_dis_mat1[:, :2].sum(dim=1) / 1   # obtain d-, where k2 = 1
             topK_proto_dis2 = sorted_proto_dis_mat2[:, :2].sum(dim=1) / 1
-            dist_loss_1 = torch.max(torch.zeros(59).cuda(), -topK_proto_dis1 + gamma2).mean() # Lr_euc = max(0, -(d-) + gamma2)
-            dist_loss_2 = torch.max(torch.zeros( self.Par ).cuda(), -topK_proto_dis2 + gamma2).mean()
+            dist_loss_1 = torch.max(torch.zeros(num_rel, device=rel_rep1.device), -topK_proto_dis1 + gamma2).mean()
+            dist_loss_2 = torch.max(torch.zeros(num_par, device=rel_rep1.device), -topK_proto_dis2 + gamma2).mean()
             add_losses.update({"dist_loss2_1": dist_loss_1})
             add_losses.update({"dist_loss2_2": dist_loss_2})
             ### end
@@ -561,18 +574,20 @@ class RPCM(nn.Module):
             ###  Prototype-based Learning  ---- Euclidean distance
             rel_labels = cat(rel_labels, dim=0)
             gamma1 = 1.0
-            rel_rep_expand = rel_rep1.unsqueeze(dim=1).expand(-1, 59, -1)  # r
+            rel_rep_expand = rel_rep1.unsqueeze(dim=1).expand(-1, num_rel, -1)  # r
             predicate_proto_expand = predicate_proto1.unsqueeze(dim=0).expand(rel_labels.size(0), -1, -1)  # ci
             distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2    # Distance Set G, gi = ||r-ci||_2^2
-            mask_neg = torch.ones(rel_labels.size(0), 59).cuda()  
+            mask_neg = torch.ones(rel_labels.size(0), num_rel, device=rel_rep1.device)
             mask_neg[torch.arange(rel_labels.size(0)), rel_labels] = 0
             distance_set_neg = distance_set * mask_neg
             distance_set_pos = distance_set[torch.arange(rel_labels.size(0)), rel_labels]  # gt i.e., g+;keyi jiezhe posdistance  jisuan density
             sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
             #K=max(int(0.1*len(sorted_distance_set_neg)),10)
-            topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :11].sum(dim=1) / 10  # obtaining g-, where k1 = 10, 
+            k = min(11, num_rel)
+            denom = max(1, k - 1)
+            topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :k].sum(dim=1) / denom
             #topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :6].sum(dim=1) / 5  # obtaining g-, where k1 = 10, 
-            loss_sum = torch.max(torch.zeros(rel_labels.size(0)).cuda(), distance_set_pos - topK_sorted_distance_set_neg + gamma1).mean()
+            loss_sum = torch.max(torch.zeros(rel_labels.size(0), device=rel_rep1.device), distance_set_pos - topK_sorted_distance_set_neg + gamma1).mean()
             add_losses.update({"loss_dis": loss_sum})     # Le_euc = max(0, (g+) - (g-) + gamma1)
 
 
@@ -1563,5 +1578,3 @@ class VCTreePredictor(nn.Module):
             add_losses["binary_loss"] = sum(binary_loss) / len(binary_loss)
 
         return obj_dists, rel_dists, add_losses
-
-
