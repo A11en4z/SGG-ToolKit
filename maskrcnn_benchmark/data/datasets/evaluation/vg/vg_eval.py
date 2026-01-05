@@ -182,7 +182,7 @@ def do_vg_evaluation(
         result_str += "F1 (harmonic mean of R and mR): "
         for k in metrics_ks:
             v = metrics[k]
-            result_str += " F1 @ %d: %.4f (R=%.4f, mR=%.4f);" % (k, v["F1"], v["R"], v["mR"])
+            result_str += " F1 @ %d: %.4f R=%.4f, mR=%.4f;" % (k, v["F1"], v["R"], v["mR"])
         result_str += "\n"
         result_str += "F1(avg) over {}: {:.4f}\n".format(f1_avg_ks, f1_avg)
         result_str += '=' * 100 + '\n'

@@ -234,6 +234,29 @@ def _cleanup_detectron_checkpoints(output_dir: str, keep_last: int, keep_model_f
             pass
 
 
+def _find_best_epoch_checkpoint(output_dir: str) -> str:
+    """在 output_dir 下查找 best_epoch checkpoint，优先 best_epoch.pth，其次 best_epoch_*.pth（取编号最大）。"""
+    if not output_dir or not os.path.isdir(output_dir):
+        return ""
+    direct = os.path.join(output_dir, "best_epoch.pth")
+    if os.path.exists(direct):
+        return direct
+
+    pattern = re.compile(r"^best_epoch_(\d+)\.pth$")
+    best_num = None
+    best_path = ""
+    for name in os.listdir(output_dir):
+        m = pattern.match(name)
+        if not m:
+            continue
+        num = int(m.group(1))
+        path = os.path.join(output_dir, name)
+        if best_num is None or num > best_num:
+            best_num = num
+            best_path = path
+    return best_path
+
+
 def _build_mmcv_checkpoint_meta():
     """构造 mmcv.save_checkpoint 所需的 meta 信息。"""
     meta = {}
@@ -940,7 +963,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
                          if not v:
                              continue
                          parts.append(
-                             "F1@{}={:.4f}(R={:.4f},mR={:.4f})".format(k, v["F1"], v["R"], v["mR"])
+                             "F1@{}={:.4f} R={:.4f} mR={:.4f}".format(k, v["F1"], v["R"], v["mR"])
                          )
                      logger.info("[val][{}][{}] F1(avg)={:.4f} {}".format(mode, dataset_name, f1_avg, " ".join(parts)))
 
@@ -953,7 +976,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
                          logger.info("[best] iteration={} F1(avg)={:.4f}".format(best_f1_iter, best_f1_avg))
                          if cfg.OUTPUT_DIR:
                              if cfg.Type != "CV":
-                                 best_path = os.path.join(cfg.OUTPUT_DIR, "best_epoch.pth")
+                                 best_path = os.path.join(cfg.OUTPUT_DIR, "best_epoch_{}.pth".format(iteration))
                                  meta = _build_mmcv_checkpoint_meta()
                                  save_checkpoint(model, best_path, optimizer=optimizer, meta=meta)
                              else:
@@ -964,7 +987,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
                                          prev_last = f.read()
                                  except Exception:
                                      prev_last = None
-                                 checkpointer.save("best_epoch", **arguments)
+                                 checkpointer.save("best_epoch_{:07d}".format(iteration), **arguments)
                                  if prev_last is not None:
                                      try:
                                          with open(last_checkpoint_file, "w") as f:
@@ -1221,8 +1244,8 @@ def main(debug=False):
     model = train(cfg, local_rank, args.distributed, logger, debug=debug, mmcf =  args.mm_config ,mmwei =  args.mm_weight)
     if not args.skip_test:
         if cfg.OUTPUT_DIR:
-            best_ckpt = os.path.join(cfg.OUTPUT_DIR, "best_epoch.pth")
-            if os.path.exists(best_ckpt):
+            best_ckpt = _find_best_epoch_checkpoint(cfg.OUTPUT_DIR)
+            if best_ckpt and os.path.exists(best_ckpt):
                 logger.info("Loading best checkpoint for test: {}".format(best_ckpt))
                 model_to_load = model.module if args.distributed else model
                 if cfg.Type == "CV":
