@@ -173,9 +173,9 @@ MODEL:
     WORD_EMBEDDING_FEATURES: true
 DATASETS:
   ### RS
-  TRAIN: ("STAR_with_attribute_train",)
-  VAL: ("STAR_with_attribute_val",)
-  TEST: ("STAR_with_attribute_test",)
+  TRAIN: ("DIOR_with_attribute_train",)
+  VAL: ("DIOR_with_attribute_val",)
+  TEST: ("DIOR_with_attribute_test",)
 DATALOADER:
   SIZE_DIVISIBILITY: 32
 SOLVER:

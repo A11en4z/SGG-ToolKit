@@ -95,6 +95,66 @@ def _get_sgg_mode(cfg) -> str:
         return "sgcls"
     return "sgdet"
 
+def _auto_update_longtail_ids(cfg, logger):
+    """根据训练集谓词频次自动生成并写回 cfg.HEAD_IDS/BODY_IDS/TAIL_IDS。"""
+    try:
+        from maskrcnn_benchmark.data import get_dataset_statistics
+    except Exception:
+        from maskrcnn_benchmark.data.build import get_dataset_statistics
+
+    stats = None
+    if get_rank() == 0:
+        try:
+            stats = get_dataset_statistics(cfg)
+        except Exception as e:
+            logger.info("AUTO_LONGTAIL_IDS compute failed on rank0: {}".format(e))
+            stats = None
+    synchronize()
+    if stats is None:
+        try:
+            stats = get_dataset_statistics(cfg)
+        except Exception as e:
+            logger.info("AUTO_LONGTAIL_IDS load failed: {}".format(e))
+            return
+
+    fg_matrix = stats.get("fg_matrix", None)
+    if fg_matrix is None:
+        logger.info("AUTO_LONGTAIL_IDS skipped: fg_matrix missing.")
+        return
+
+    if isinstance(fg_matrix, torch.Tensor):
+        pred_freq = fg_matrix.sum(dim=(0, 1)).detach().cpu().numpy()
+    else:
+        pred_freq = torch.as_tensor(fg_matrix).sum(dim=(0, 1)).detach().cpu().numpy()
+
+    if pred_freq.ndim != 1 or pred_freq.shape[0] <= 1:
+        logger.info("AUTO_LONGTAIL_IDS skipped: invalid pred_freq shape {}.".format(getattr(pred_freq, "shape", None)))
+        return
+
+    pred_ids = list(range(1, int(pred_freq.shape[0])))
+    pred_counts = [float(pred_freq[i]) for i in pred_ids]
+    pred_ids_sorted = [i for i, _ in sorted(zip(pred_ids, pred_counts), key=lambda x: (-x[1], x[0]))]
+
+    n = len(pred_ids_sorted)
+    if n == 0:
+        logger.info("AUTO_LONGTAIL_IDS skipped: no predicate classes.")
+        return
+
+    head_n = max(1, n // 3)
+    body_n = max(1, n // 3)
+    head_ids = sorted(pred_ids_sorted[:head_n])
+    body_ids = sorted(pred_ids_sorted[head_n:head_n + body_n])
+    tail_ids = sorted(pred_ids_sorted[head_n + body_n:])
+
+    cfg.HEAD_IDS = head_ids
+    cfg.BODY_IDS = body_ids
+    cfg.TAIL_IDS = tail_ids
+    logger.info(
+        "AUTO_LONGTAIL_IDS updated: num_pred(no_bg)={} head={} body={} tail={}".format(
+            n, len(head_ids), len(body_ids), len(tail_ids)
+        )
+    )
+
 
 def _safe_harmonic_mean(a: float, b: float) -> float:
     """计算两个数的调和平均数，自动规避除零。"""
@@ -759,7 +819,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
             output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", "test")
         if output_folder:
             mkdir(output_folder)
-        val_result = run_val(cfg, model, test_data_loaders, distributed, logger, output_folder=output_folder)
+        val_result = run_val(cfg, model, test_data_loaders, distributed, logger, output_folder=output_folder, dataset_names=cfg.DATASETS.TEST)
         sys.exit() 
 
 
@@ -861,7 +921,10 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
              val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder=output_folder)
              if cfg.MODEL.RELATION_ON and output_folder:
                  mode = _get_sgg_mode(cfg)
-                 f1_target_ks = (50, 100, 200)
+                 try:
+                     f1_target_ks = tuple(int(k) for k in cfg.TEST.RELATION.RECALL_K)
+                 except Exception:
+                     f1_target_ks = (50, 100, 200)
                  f1_values = []
                  dataset_names = tuple(cfg.DATASETS.VAL)
                  for dataset_name in dataset_names:
@@ -945,7 +1008,7 @@ def fix_eval_modules(eval_modules):
         # i.e., all self.training condition is set to False
 
 
-def run_val(cfg, model, val_data_loaders, distributed, logger,m = None,ite = None,CCM = None,output_folder = None,vae = None):
+def run_val(cfg, model, val_data_loaders, distributed, logger, m=None, ite=None, CCM=None, output_folder=None, vae=None, dataset_names=None):
     val = 1
     if distributed:
         model = model.module
@@ -960,7 +1023,7 @@ def run_val(cfg, model, val_data_loaders, distributed, logger,m = None,ite = Non
     if cfg.MODEL.ATTRIBUTE_ON:
         iou_types = iou_types + ("attributes",)
 
-    dataset_names = cfg.DATASETS.VAL
+    dataset_names = cfg.DATASETS.VAL if dataset_names is None else dataset_names
     val_result = []
     for dataset_name, val_data_loader in zip(dataset_names, val_data_loaders):
         dataset_output_folder = output_folder
@@ -1144,9 +1207,11 @@ def main(debug=False):
     logger.info("Loaded configuration file {}".format(args.config_file))
     with open(args.config_file, "r") as cf:
         config_str = "\n" + cf.read()
-        logger.info(config_str)
+    logger.info(config_str)
 
     logger.info("Running with config:\n{}".format(cfg))
+    if getattr(cfg, "AUTO_LONGTAIL_IDS", False) and cfg.MODEL.RELATION_ON:
+        _auto_update_longtail_ids(cfg, logger)
     output_config_path = os.path.join(cfg.OUTPUT_DIR, 'config.yml')
     logger.info("Saving config into: {}".format(output_config_path))
     # save overloaded model config in the output directory
@@ -1155,6 +1220,17 @@ def main(debug=False):
     
     model = train(cfg, local_rank, args.distributed, logger, debug=debug, mmcf =  args.mm_config ,mmwei =  args.mm_weight)
     if not args.skip_test:
+        if cfg.OUTPUT_DIR:
+            best_ckpt = os.path.join(cfg.OUTPUT_DIR, "best_epoch.pth")
+            if os.path.exists(best_ckpt):
+                logger.info("Loading best checkpoint for test: {}".format(best_ckpt))
+                model_to_load = model.module if args.distributed else model
+                if cfg.Type == "CV":
+                    DetectronCheckpointer(
+                        cfg, model_to_load, save_dir=cfg.OUTPUT_DIR, save_to_disk=False, logger=logger
+                    ).load(best_ckpt, with_optim=False)
+                else:
+                    load_checkpoint(model_to_load, best_ckpt, map_location="cpu", strict=False)
         run_test(cfg, model, args.distributed, logger)
 
 

@@ -35,7 +35,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
 MODEL_NAME='LOBB_RPCM_predcls_train'
 
-path="./Checkpoints/${MODEL_NAME}/"
+path="./Checkpoints/${MODEL_NAME}_$(date +%Y%m%d_%H%M%S)/"
 mkdir -p "$path"
 
 echo "Starting training..."
@@ -72,6 +72,7 @@ echo "Weights: $WEIGHTS"
  OUTPUT_DIR "$path" \
  SOLVER.PRE_VAL False \
  SOLVER.GRAD_NORM_CLIP 5.0 \
+ AUTO_LONGTAIL_IDS True \
  Type "Large_RS_OBB" \
  filter_method "PPG" \
  2>&1 | tee -a "${path}/console.log"

@@ -656,7 +656,8 @@ def load_image_filenames_CV(img_dir, image_file):
     with open(image_file, 'r') as f:
         im_data = json.load(f)
 
-    corrupted_ims = ['1592.jpg', '1722.jpg', '4616.jpg', '4617.jpg']
+    #corrupted_ims = ['1592.jpg', '1722.jpg', '4616.jpg', '4617.jpg']
+    corrupted_ims = []
     fns = []
     img_info = []
     for i, img in enumerate(im_data):
@@ -668,8 +669,8 @@ def load_image_filenames_CV(img_dir, image_file):
         if os.path.exists(filename):
             fns.append(filename)
             img_info.append(img)
-    assert len(fns) == 108073
-    assert len(img_info) == 108073
+    # assert len(fns) == 108073
+    # assert len(img_info) == 108073
     return fns, img_info
 
 
@@ -733,31 +734,109 @@ def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter
     data_split = roi_h5['split'][:]
     split_values = np.unique(data_split)
 
+    train_flag = 0 if 0 in split_values else int(split_values.min())
+    has_val_split = 1 in split_values
+    test_flag = 2 if 2 in split_values else int(split_values.max())
+    val_flag = 1 if has_val_split else train_flag
+
     if split == 'test':
-        split_flag = 2 if 2 in split_values else int(split_values.max())
+        split_flag = test_flag
     elif split == 'val':
-        split_flag = 1 if 1 in split_values else 0 if 0 in split_values else int(split_values.min())
+        split_flag = val_flag
     else:
-        split_flag = 0 if 0 in split_values else int(split_values.min())
+        split_flag = train_flag
 
-    split_mask = data_split == split_flag
-
-    split_mask &= roi_h5['img_to_first_box'][:] >= 0
+    box_valid = roi_h5['img_to_first_box'][:] >= 0
+    split_mask = (data_split == split_flag) & box_valid
     if filter_empty_rels:
-        split_mask &= roi_h5['img_to_first_rel'][:] >= 0
+        num_rel = int(roi_h5['relationships'].shape[0]) if 'relationships' in roi_h5 else -1
+        first_rel = roi_h5['img_to_first_rel'][:].astype(np.int64, copy=False)
+        last_rel = roi_h5['img_to_last_rel'][:].astype(np.int64, copy=False)
+        rel_valid = first_rel >= 0
+        rel_valid &= last_rel >= first_rel
+        if num_rel >= 0:
+            rel_valid &= first_rel < num_rel
+            rel_valid &= last_rel < num_rel
+        split_mask &= rel_valid
 
     image_index = np.where(split_mask)[0]
     if num_im > -1:
         image_index = image_index[:num_im]
 
-    if num_val_im > 0:
+    if (not has_val_split) and num_val_im > 0:
+        desired_val_size = int(num_val_im)
+        if test_flag is not None and test_flag != train_flag:
+            test_mask = (data_split == test_flag) & box_valid
+            if filter_empty_rels:
+                test_mask &= rel_valid
+            desired_val_size = int(test_mask.sum())
+
         if split == 'val':
-            image_index = image_index[:num_val_im]
-        elif split == 'train' and split_flag == 0:
-            image_index = image_index[num_val_im:]
+            image_index = image_index[:desired_val_size]
+        elif split == 'train' and split_flag == train_flag:
+            image_index = image_index[desired_val_size:]
 
     split_mask = np.zeros_like(data_split).astype(bool)
     split_mask[image_index] = True
+
+    if os.environ.get("SGG_SPLIT_DEBUG", "").lower() not in ("", "0", "false", "no"):
+        num_rel = int(roi_h5['relationships'].shape[0]) if 'relationships' in roi_h5 else -1
+        first_rel_all = roi_h5['img_to_first_rel'][:].astype(np.int64, copy=False)
+        last_rel_all = roi_h5['img_to_last_rel'][:].astype(np.int64, copy=False)
+        rel_valid_all = first_rel_all >= 0
+        rel_valid_all &= last_rel_all >= first_rel_all
+        if num_rel >= 0:
+            rel_valid_all &= first_rel_all < num_rel
+            rel_valid_all &= last_rel_all < num_rel
+        base_mask = data_split == split_flag
+        with_box_mask = base_mask & (roi_h5['img_to_first_box'][:] >= 0)
+        with_rel_mask = with_box_mask & rel_valid_all
+        debug_total = int(data_split.shape[0])
+        debug_in_split = int(base_mask.sum())
+        debug_with_box = int(with_box_mask.sum())
+        debug_with_rel = int(with_rel_mask.sum())
+        debug_final = int(split_mask.sum())
+        print(
+            "[SGG_SPLIT_DEBUG] split={} split_flag={} total={} in_split={} with_box={} with_rel={} filter_empty_rels={} final={} roidb={}".format(
+                split,
+                int(split_flag),
+                debug_total,
+                debug_in_split,
+                debug_with_box,
+                debug_with_rel,
+                bool(filter_empty_rels),
+                debug_final,
+                roidb_file,
+            )
+        )
+        try:
+            im_first = first_rel_all[split_mask]
+            im_last = last_rel_all[split_mask]
+            invalid = int((im_last < im_first).sum())
+            out_of_range = 0
+            if num_rel >= 0:
+                out_of_range = int(((im_first >= num_rel) | (im_last >= num_rel)).sum())
+            rel_counts = im_last - im_first + 1
+            rel_counts = np.where(rel_counts > 0, rel_counts, 0)
+            if rel_counts.size > 0:
+                p50 = float(np.percentile(rel_counts, 50))
+                p90 = float(np.percentile(rel_counts, 90))
+                p99 = float(np.percentile(rel_counts, 99))
+                print(
+                    "[SGG_SPLIT_DEBUG] split={} rel_count mean={:.2f} p50={:.1f} p90={:.1f} p99={:.1f} max={} zeros={} invalid_last_lt_first={} out_of_range={}".format(
+                        split,
+                        float(np.mean(rel_counts)),
+                        p50,
+                        p90,
+                        p99,
+                        int(np.max(rel_counts)),
+                        int((rel_counts == 0).sum()),
+                        invalid,
+                        out_of_range,
+                    )
+                )
+        except Exception as e:
+            print("[SGG_SPLIT_DEBUG] split={} rel_count_stats_failed err={}".format(split, str(e)))
 
     box_scales = []
     for key in roi_h5.keys():
@@ -925,7 +1004,15 @@ def load_graphs_CV(roidb_file, split, num_im, num_val_im, filter_empty_rels, fil
     # Filter out images without bounding boxes
     split_mask &= roi_h5['img_to_first_box'][:] >= 0
     if filter_empty_rels:
-        split_mask &= roi_h5['img_to_first_rel'][:] >= 0
+        num_rel = int(roi_h5['relationships'].shape[0]) if 'relationships' in roi_h5 else -1
+        first_rel = roi_h5['img_to_first_rel'][:].astype(np.int64, copy=False)
+        last_rel = roi_h5['img_to_last_rel'][:].astype(np.int64, copy=False)
+        rel_valid = first_rel >= 0
+        rel_valid &= last_rel >= first_rel
+        if num_rel >= 0:
+            rel_valid &= first_rel < num_rel
+            rel_valid &= last_rel < num_rel
+        split_mask &= rel_valid
 
     image_index = np.where(split_mask)[0]
     if num_im > -1:

@@ -56,6 +56,7 @@ _C.MIXUP.FG_LAMBDA = 0.0
 _C.HEAD_IDS = [4, 12, 21, 22, 23, 27, 34]
 _C.BODY_IDS = [1, 3, 5, 6, 8, 9, 10, 11, 16, 18, 19, 24, 29, 30, 31, 35, 37, 38, 39, 50, 51]
 _C.TAIL_IDS = [2, 7, 13, 14, 15, 17, 20, 25, 26, 28, 32, 33, 36, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 52, 53, 54, 55, 56, 57, 58]
+_C.AUTO_LONGTAIL_IDS = False
 
 # If the WEIGHT starts with a catalog://, like :R-50, the code will look for
 # the path in paths_catalog. Else, it will use it as the specified absolute
