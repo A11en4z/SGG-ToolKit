@@ -721,6 +721,7 @@ _C.TEST.RELATION = CN()
 _C.TEST.RELATION.MULTIPLE_PREDS = False
 _C.TEST.RELATION.IOU_THRESHOLD = 0.5
 _C.TEST.RELATION.REQUIRE_OVERLAP = True
+_C.TEST.RELATION.RECALL_K = (1000, 1500, 2000)
 # when predict the label of bbox, run nms on each cls
 _C.TEST.RELATION.LATER_NMS_PREDICTION_THRES = 0.3 
 # synchronize_gather, used for sgdet, otherwise test on multi-gpu will cause out of memory

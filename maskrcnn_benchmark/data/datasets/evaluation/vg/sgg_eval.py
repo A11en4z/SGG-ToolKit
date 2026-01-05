@@ -19,9 +19,10 @@ from mmdet.core.bbox.iou_calculators import bbox_overlaps as HRS_bbox_overlaps
 
 import math
 class SceneGraphEvaluation(ABC):
-    def __init__(self, result_dict):
+    def __init__(self, result_dict, topk=None):
         super().__init__()
         self.result_dict = result_dict
+        self.topk = tuple(topk) if topk is not None else (1000, 1500, 2000)
  
     @abstractmethod
     def register_container(self, mode):
@@ -39,12 +40,12 @@ Traditional Recall, implement based on:
 https://github.com/rowanz/neural-motifs
 """
 class SGRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict):
-        super(SGRecall, self).__init__(result_dict)
+    def __init__(self, result_dict, topk=None):
+        super(SGRecall, self).__init__(result_dict, topk=topk)
         
 
     def register_container(self, mode):
-        self.result_dict[mode + '_recall'] = {1000: [], 1500: [], 2000: []}
+        self.result_dict[mode + '_recall'] = {k: [] for k in self.topk}
         # self.result_dict[mode + '_recall'] = {20: [], 50: [], 100: []}
 
     def generate_print_string(self, mode):
@@ -107,11 +108,11 @@ No Graph Constraint Recall, implement based on:
 https://github.com/rowanz/neural-motifs
 """
 class SGNoGraphConstraintRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict):
-        super(SGNoGraphConstraintRecall, self).__init__(result_dict)
+    def __init__(self, result_dict, topk=None):
+        super(SGNoGraphConstraintRecall, self).__init__(result_dict, topk=topk)
 
     def register_container(self, mode):
-        self.result_dict[mode + '_recall_nogc'] = {1000: [], 1500: [], 2000: []}
+        self.result_dict[mode + '_recall_nogc'] = {k: [] for k in self.topk}
 
     def generate_print_string(self, mode):
         result_str = 'SGG eval: '
@@ -131,7 +132,8 @@ class SGNoGraphConstraintRecall(SceneGraphEvaluation):
 
         obj_scores_per_rel = obj_scores[pred_rel_inds].prod(1)
         nogc_overall_scores = obj_scores_per_rel[:,None] * rel_scores[:,1:]
-        nogc_score_inds = argsort_desc(nogc_overall_scores)[:1000]
+        max_k = max(self.topk) if len(self.topk) > 0 else 0
+        nogc_score_inds = argsort_desc(nogc_overall_scores)[:max_k]
         nogc_pred_rels = np.column_stack((pred_rel_inds[nogc_score_inds[:,0]], nogc_score_inds[:,1]+1))
         nogc_pred_scores = rel_scores[nogc_score_inds[:,0], nogc_score_inds[:,1]+1]
 
@@ -172,11 +174,11 @@ Zero Shot Scene Graph
 Only calculate the triplet that not occurred in the training set
 """
 class SGZeroShotRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict):
-        super(SGZeroShotRecall, self).__init__(result_dict)
+    def __init__(self, result_dict, topk=None):
+        super(SGZeroShotRecall, self).__init__(result_dict, topk=topk)
 
     def register_container(self, mode):
-        self.result_dict[mode + '_zeroshot_recall'] = {1000: [], 1500: [], 2000: []} 
+        self.result_dict[mode + '_zeroshot_recall'] = {k: [] for k in self.topk} 
 
     def generate_print_string(self, mode):
         result_str = 'SGG eval: '
@@ -216,11 +218,11 @@ class SGZeroShotRecall(SceneGraphEvaluation):
 No Graph Constraint Mean Recall
 """
 class SGNGZeroShotRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict):
-        super(SGNGZeroShotRecall, self).__init__(result_dict)
+    def __init__(self, result_dict, topk=None):
+        super(SGNGZeroShotRecall, self).__init__(result_dict, topk=topk)
     
     def register_container(self, mode):
-        self.result_dict[mode + '_ng_zeroshot_recall'] = {1000: [], 1500: [], 2000: []} 
+        self.result_dict[mode + '_ng_zeroshot_recall'] = {k: [] for k in self.topk} 
 
     def generate_print_string(self, mode):
         result_str = 'SGG eval: '
@@ -262,12 +264,12 @@ Calculate Recall for SG-Cls and Pred-Cls
 Only used in https://github.com/NVIDIA/ContrastiveLosses4VRD for sgcls and predcls
 """
 class SGPairAccuracy(SceneGraphEvaluation):
-    def __init__(self, result_dict):
-        super(SGPairAccuracy, self).__init__(result_dict)
+    def __init__(self, result_dict, topk=None):
+        super(SGPairAccuracy, self).__init__(result_dict, topk=topk)
 
     def register_container(self, mode):
-        self.result_dict[mode + '_accuracy_hit'] = {1000: [], 1500: [], 2000: []}
-        self.result_dict[mode + '_accuracy_count'] = {1000: [], 1500: [], 2000: []}
+        self.result_dict[mode + '_accuracy_hit'] = {k: [] for k in self.topk}
+        self.result_dict[mode + '_accuracy_count'] = {k: [] for k in self.topk}
 
     def generate_print_string(self, mode):
         result_str = 'SGG eval: '
@@ -310,17 +312,17 @@ Mean Recall: Proposed in:
 https://arxiv.org/pdf/1812.01880.pdf CVPR, 2019
 """
 class SGMeanRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict, num_rel, ind_to_predicates, print_detail=False):
-        super(SGMeanRecall, self).__init__(result_dict)
+    def __init__(self, result_dict, num_rel, ind_to_predicates, print_detail=False, topk=None):
+        super(SGMeanRecall, self).__init__(result_dict, topk=topk)
         self.num_rel = num_rel
         self.print_detail = print_detail
         self.rel_name_list = ind_to_predicates[1:] # remove __background__
 
     def register_container(self, mode):
 
-        self.result_dict[mode + '_mean_recall'] = {1000: 0.0, 1500: 0.0, 2000: 0.0}
-        self.result_dict[mode + '_mean_recall_collect'] = {1000: [[] for i in range(self.num_rel)], 1500: [[] for i in range(self.num_rel)], 2000: [[] for i in range(self.num_rel)]}
-        self.result_dict[mode + '_mean_recall_list'] = {1000: [], 1500: [], 2000: []}
+        self.result_dict[mode + '_mean_recall'] = {k: 0.0 for k in self.topk}
+        self.result_dict[mode + '_mean_recall_collect'] = {k: [[] for i in range(self.num_rel)] for k in self.topk}
+        self.result_dict[mode + '_mean_recall_list'] = {k: [] for k in self.topk}
 
 
 
@@ -332,7 +334,8 @@ class SGMeanRecall(SceneGraphEvaluation):
         result_str += '\n'
         if self.print_detail:
             result_str += '----------------------- Details ------------------------\n'
-            for n, r in zip(self.rel_name_list, self.result_dict[mode + '_mean_recall_list'][1000]):
+            detail_k = self.topk[0] if len(self.topk) > 0 else 1000
+            for n, r in zip(self.rel_name_list, self.result_dict[mode + '_mean_recall_list'][detail_k]):
                 result_str += '({}:{:.4f}) '.format(str(n), r)
             result_str += '\n'
             result_str += '--------------------------------------------------------\n'
@@ -347,10 +350,9 @@ class SGMeanRecall(SceneGraphEvaluation):
         result_str += '\n'   
         if self.print_detail:
             result_str += '----------------------- Details ------------------------\n'
-            recalls = [1000, 1500, 2000]
-            for recall in recalls:
-                result_str += 'Recall @ %d:\n' % recall
-                for n, r in zip(self.rel_name_list, self.result_dict[mode + '_mean_recall_list'][recall]):
+            for k in self.topk:
+                result_str += 'Recall @ %d:\n' % k
+                for n, r in zip(self.rel_name_list, self.result_dict[mode + '_mean_recall_list'][k]):
                     result_str += '({}:{:.4f}) '.format(str(n), r)
                 result_str += '\n'
             result_str += '--------------------------------------------------------\n'
@@ -404,16 +406,16 @@ class SGMeanRecall(SceneGraphEvaluation):
 No Graph Constraint Mean Recall
 """
 class SGNGMeanRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict, num_rel, ind_to_predicates, print_detail=False):
-        super(SGNGMeanRecall, self).__init__(result_dict)
+    def __init__(self, result_dict, num_rel, ind_to_predicates, print_detail=False, topk=None):
+        super(SGNGMeanRecall, self).__init__(result_dict, topk=topk)
         self.num_rel = num_rel
         self.print_detail = print_detail
         self.rel_name_list = ind_to_predicates[1:] # remove __background__
 
     def register_container(self, mode):
-        self.result_dict[mode + '_ng_mean_recall'] = {1000: 0.0, 1500: 0.0, 2000: 0.0}
-        self.result_dict[mode + '_ng_mean_recall_collect'] = {1000: [[] for i in range(self.num_rel)], 1500: [[] for i in range(self.num_rel)], 2000: [[] for i in range(self.num_rel)]}
-        self.result_dict[mode + '_ng_mean_recall_list'] = {1000: [], 1500: [], 2000: []}
+        self.result_dict[mode + '_ng_mean_recall'] = {k: 0.0 for k in self.topk}
+        self.result_dict[mode + '_ng_mean_recall_collect'] = {k: [[] for i in range(self.num_rel)] for k in self.topk}
+        self.result_dict[mode + '_ng_mean_recall_list'] = {k: [] for k in self.topk}
 
     def generate_print_string111(self, mode):
         result_str = 'SGG eval: '
@@ -423,7 +425,8 @@ class SGNGMeanRecall(SceneGraphEvaluation):
         result_str += '\n'
         if self.print_detail:
             result_str += '----------------------- Details ------------------------\n'
-            for n, r in zip(self.rel_name_list, self.result_dict[mode + '_ng_mean_recall_list'][1000]):
+            detail_k = self.topk[0] if len(self.topk) > 0 else 1000
+            for n, r in zip(self.rel_name_list, self.result_dict[mode + '_ng_mean_recall_list'][detail_k]):
                 result_str += '({}:{:.4f}) '.format(str(n), r)
             result_str += '\n'
             result_str += '--------------------------------------------------------\n'
@@ -438,10 +441,9 @@ class SGNGMeanRecall(SceneGraphEvaluation):
         result_str += '\n'   
         if self.print_detail:
             result_str += '----------------------- Details ------------------------\n'
-            recalls = [1000, 1500, 2000]
-            for recall in recalls:
-                result_str += 'Recall @ %d:\n' % recall
-                for n, r in zip(self.rel_name_list, self.result_dict[mode + '_mean_recall_list'][recall]):
+            for k in self.topk:
+                result_str += 'Recall @ %d:\n' % k
+                for n, r in zip(self.rel_name_list, self.result_dict[mode + '_mean_recall_list'][k]):
                     result_str += '({}:{:.4f}) '.format(str(n), r)
                 result_str += '\n'
             result_str += '--------------------------------------------------------\n'
@@ -499,11 +501,11 @@ Accumulate Recall:
 calculate recall on the whole dataset instead of each image
 """
 class SGAccumulateRecall(SceneGraphEvaluation):
-    def __init__(self, result_dict):
-        super(SGAccumulateRecall, self).__init__(result_dict)
+    def __init__(self, result_dict, topk=None):
+        super(SGAccumulateRecall, self).__init__(result_dict, topk=topk)
 
     def register_container(self, mode):
-        self.result_dict[mode + '_accumulate_recall'] = {1000: 0.0, 1500: 0.0, 2000: 0.0}
+        self.result_dict[mode + '_accumulate_recall'] = {k: 0.0 for k in self.topk}
 
     def generate_print_string(self, mode):
         result_str = 'SGG eval: '
@@ -597,5 +599,4 @@ def _compute_pred_matches(gt_triplets, pred_triplets,
         for i in np.where(keep_inds)[0][inds]:
             pred_to_gt[i].append(int(gt_ind))
     return pred_to_gt
-
 

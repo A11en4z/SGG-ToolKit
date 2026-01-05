@@ -15,6 +15,26 @@ from maskrcnn_benchmark.utils.miscellaneous import intersect_2d, argsort_desc, b
 from maskrcnn_benchmark.data.datasets.evaluation.vg.sgg_eval import SGRecall, SGNoGraphConstraintRecall, SGZeroShotRecall, SGNGZeroShotRecall, SGPairAccuracy, SGMeanRecall, SGNGMeanRecall, SGAccumulateRecall
 from mmdet.core.bbox.iou_calculators import bbox_overlaps
 
+def _safe_harmonic_mean(a: float, b: float) -> float:
+    """计算两个数的调和平均数，自动规避除零。"""
+    denom = a + b
+    if denom <= 0:
+        return 0.0
+    return 2.0 * a * b / denom
+
+
+def _summarize_relation_metrics(result_dict, mode: str, ks):
+    """从 result_dict 中汇总 R/mR/F1 指标（按给定 ks）。"""
+    out = {}
+    for k in ks:
+        recalls = result_dict.get(mode + "_recall", {}).get(k, [])
+        r_k = float(np.mean(recalls)) if len(recalls) > 0 else 0.0
+        mr_k = float(result_dict.get(mode + "_mean_recall", {}).get(k, 0.0))
+        f1_k = _safe_harmonic_mean(r_k, mr_k)
+        out[k] = dict(R=r_k, mR=mr_k, F1=f1_k)
+    return out
+
+
 def do_vg_evaluation(
     cfg,
     dataset,
@@ -41,6 +61,7 @@ def do_vg_evaluation(
     num_rel_category = cfg.MODEL.ROI_RELATION_HEAD.NUM_CLASSES
     multiple_preds = cfg.TEST.RELATION.MULTIPLE_PREDS
     iou_thres = cfg.TEST.RELATION.IOU_THRESHOLD
+    recall_k = tuple(cfg.TEST.RELATION.RECALL_K)
     assert mode in {'predcls', 'sgdet', 'sgcls', 'phrdet', 'preddet'}
 
     groundtruths = []
@@ -88,12 +109,12 @@ def do_vg_evaluation(
         result_dict = {}
         evaluator = {}
         # tradictional Recall@K
-        eval_recall = SGRecall(result_dict)
+        eval_recall = SGRecall(result_dict, topk=recall_k)
         eval_recall.register_container(mode)
         evaluator['eval_recall'] = eval_recall
 
         # no graphical constraint
-        eval_nog_recall = SGNoGraphConstraintRecall(result_dict)
+        eval_nog_recall = SGNoGraphConstraintRecall(result_dict, topk=recall_k)
         eval_nog_recall.register_container(mode)
         evaluator['eval_nog_recall'] = eval_nog_recall
 
@@ -108,17 +129,17 @@ def do_vg_evaluation(
         # evaluator['eval_ng_zeroshot_recall'] = eval_ng_zeroshot_recall
         
         # used by https://github.com/NVIDIA/ContrastiveLosses4VRD for sgcls and predcls
-        eval_pair_accuracy = SGPairAccuracy(result_dict)
+        eval_pair_accuracy = SGPairAccuracy(result_dict, topk=recall_k)
         eval_pair_accuracy.register_container(mode)
         evaluator['eval_pair_accuracy'] = eval_pair_accuracy
 
         # used for meanRecall@K
-        eval_mean_recall = SGMeanRecall(result_dict, num_rel_category, dataset.ind_to_predicates, print_detail=True)
+        eval_mean_recall = SGMeanRecall(result_dict, num_rel_category, dataset.ind_to_predicates, print_detail=True, topk=recall_k)
         eval_mean_recall.register_container(mode)
         evaluator['eval_mean_recall'] = eval_mean_recall
 
         # used for no graph constraint mean Recall@K
-        eval_ng_mean_recall = SGNGMeanRecall(result_dict, num_rel_category, dataset.ind_to_predicates, print_detail=True)
+        eval_ng_mean_recall = SGNGMeanRecall(result_dict, num_rel_category, dataset.ind_to_predicates, print_detail=True, topk=recall_k)
         eval_ng_mean_recall.register_container(mode)
         evaluator['eval_ng_mean_recall'] = eval_ng_mean_recall
 
@@ -146,6 +167,24 @@ def do_vg_evaluation(
 
         if cfg.MODEL.ROI_RELATION_HEAD.USE_GT_BOX:
             result_str += eval_pair_accuracy.generate_print_string(mode)
+
+        metrics_ks = tuple(recall_k)
+        metrics = _summarize_relation_metrics(result_dict, mode, metrics_ks)
+        f1_target_ks = (50, 100, 200)
+        f1_target_present = [k for k in f1_target_ks if k in metrics]
+        if len(f1_target_present) == 0:
+            f1_avg = float(np.mean([v["F1"] for v in metrics.values()])) if len(metrics) > 0 else 0.0
+            f1_avg_ks = metrics_ks
+        else:
+            f1_avg = float(np.mean([metrics[k]["F1"] for k in f1_target_present]))
+            f1_avg_ks = tuple(f1_target_present)
+
+        result_str += "F1 (harmonic mean of R and mR): "
+        for k in metrics_ks:
+            v = metrics[k]
+            result_str += " F1 @ %d: %.4f (R=%.4f, mR=%.4f);" % (k, v["F1"], v["R"], v["mR"])
+        result_str += "\n"
+        result_str += "F1(avg) over {}: {:.4f}\n".format(f1_avg_ks, f1_avg)
         result_str += '=' * 100 + '\n'
 
 
@@ -156,7 +195,8 @@ def do_vg_evaluation(
         if output_folder:
             torch.save(result_dict, os.path.join(output_folder, 'result_dict.pytorch'))
 
-        return float(np.mean(result_dict[mode + '_recall'][1000]))
+        main_k = recall_k[0] if len(recall_k) > 0 else 1000
+        return float(np.mean(result_dict[mode + '_recall'][main_k]))
 
     else:
         return -1

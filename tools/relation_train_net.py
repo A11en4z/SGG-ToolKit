@@ -8,6 +8,7 @@ import datetime
 import os
 import time
 import os.path as osp
+import re
 import torch
 from mmcv.runner.checkpoint import save_checkpoint
 import warnings
@@ -85,6 +86,107 @@ import torch.distributed as dist
 
 from mmcv.runner import (get_dist_info, init_dist, load_checkpoint,
                          wrap_fp16_model)
+
+def _get_sgg_mode(cfg) -> str:
+    """根据 cfg 推断 SGG 评测模式（predcls/sgcls/sgdet）。"""
+    if cfg.MODEL.ROI_RELATION_HEAD.USE_GT_BOX:
+        if cfg.MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL:
+            return "predcls"
+        return "sgcls"
+    return "sgdet"
+
+
+def _safe_harmonic_mean(a: float, b: float) -> float:
+    """计算两个数的调和平均数，自动规避除零。"""
+    denom = a + b
+    if denom <= 0:
+        return 0.0
+    return 2.0 * a * b / denom
+
+
+def _load_result_dict(result_dict_path: str):
+    """从 result_dict.pytorch 读取评测字典，读取失败时返回 None。"""
+    try:
+        return torch.load(result_dict_path, map_location=torch.device("cpu"))
+    except Exception:
+        return None
+
+
+def _compute_f1_from_result_dict(result_dict, mode: str, ks):
+    """根据 result_dict 计算每个 K 的 R/mR/F1 以及平均 F1。"""
+    per_k = {}
+    f1_list = []
+    for k in ks:
+        recalls = result_dict.get(mode + "_recall", {}).get(k, [])
+        r_k = float(sum(recalls) / max(len(recalls), 1))
+        mr_k = float(result_dict.get(mode + "_mean_recall", {}).get(k, 0.0))
+        f1_k = _safe_harmonic_mean(r_k, mr_k)
+        per_k[int(k)] = dict(R=r_k, mR=mr_k, F1=f1_k)
+        f1_list.append(f1_k)
+    f1_avg = float(sum(f1_list) / max(len(f1_list), 1))
+    return f1_avg, per_k
+
+
+def _cleanup_checkpoints(output_dir: str, keep_last: int, keep_paths=()):
+    """删除 output_dir 下多余的迭代 checkpoint，仅保留最近 keep_last 个。"""
+    if not output_dir or not os.path.isdir(output_dir):
+        return
+    keep_paths = {os.path.abspath(p) for p in keep_paths if p}
+    pattern = re.compile(r"^(\d+)\.pth$")
+    candidates = []
+    for name in os.listdir(output_dir):
+        m = pattern.match(name)
+        if not m:
+            continue
+        path = os.path.abspath(os.path.join(output_dir, name))
+        if path in keep_paths:
+            continue
+        candidates.append((int(m.group(1)), path))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    to_delete = [p for _, p in candidates[keep_last:]]
+    for p in to_delete:
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+
+
+def _cleanup_detectron_checkpoints(output_dir: str, keep_last: int, keep_model_final: bool = True):
+    """删除 output_dir 下多余的 Detectron 命名 checkpoint，仅保留最近 keep_last 个。"""
+    if not output_dir or not os.path.isdir(output_dir):
+        return
+    pattern = re.compile(r"^model_(\d+)\.pth$")
+    candidates = []
+    for name in os.listdir(output_dir):
+        m = pattern.match(name)
+        if not m:
+            continue
+        candidates.append((int(m.group(1)), os.path.abspath(os.path.join(output_dir, name))))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    keep_models = int(keep_last)
+    if keep_model_final and os.path.exists(os.path.join(output_dir, "model_final.pth")):
+        keep_models = max(keep_models - 1, 0)
+    to_delete = [p for _, p in candidates[keep_models:]]
+    for p in to_delete:
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+
+
+def _build_mmcv_checkpoint_meta():
+    """构造 mmcv.save_checkpoint 所需的 meta 信息。"""
+    meta = {}
+    meta["CLASSES"] = (
+        'ship', 'boat', 'crane', 'goods_yard', 'tank', 'storehouse', 'breakwater', 'dock', 'airplane',
+        'boarding_bridge', 'runway', 'taxiway', 'terminal', 'apron', 'gas_station', 'truck', 'car',
+        'truck_parking', 'car_parking', 'bridge', 'cooling_tower', 'chimney', 'vapor', 'smoke', 'genset',
+        'coal_yard', 'lattice_tower', 'substation', 'wind_mill', 'cement_concrete_pavement', 'toll_gate',
+        'flood_dam', 'gravity_dam', 'ship_lock', 'ground_track_field', 'basketball_court', 'engineering_vehicle',
+        'foundation_pit', 'intersection', 'soccer_ball_field', 'tennis_court', 'tower_crane', 'unfinished_building',
+        'arch_dam', 'roundabout', 'baseball_diamond', 'stadium', 'containment_vessel'
+    )
+    return meta
 
 
 def parse_args_OBB(mmcf = None,mmwei = None):
@@ -635,6 +737,9 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
       
     print_first_grad = True
 
+    best_f1_avg = float("-inf")
+    best_f1_iter = -1
+
     if cfg.Only_val:
         output_folder = getattr(cfg, "val_outpath", None)
         if output_folder in ("None", "none", "null", "NULL", ""):
@@ -729,16 +834,16 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         
         if iteration % cfg.SOLVER.CHECKPOINT_PERIOD == 0 or iteration == max_iter:
             if cfg.Type != "CV":
-                filename =  cfg.OUTPUT_DIR + "/" + str(iteration)+ ".pth" 
-                meta = {}
-                meta["CLASSES"]  = ('ship','boat','crane','goods_yard','tank','storehouse','breakwater','dock','airplane','boarding_bridge','runway','taxiway','terminal','apron','gas_station','truck','car','truck_parking','car_parking','bridge','cooling_tower','chimney','vapor','smoke','genset','coal_yard','lattice_tower', 'substation', 'wind_mill','cement_concrete_pavement', 'toll_gate', 'flood_dam', 'gravity_dam', 'ship_lock','ground_track_field','basketball_court','engineering_vehicle', 'foundation_pit', 'intersection', 'soccer_ball_field','tennis_court','tower_crane','unfinished_building','arch_dam','roundabout','baseball_diamond','stadium','containment_vessel')  
-
+                filename = cfg.OUTPUT_DIR + "/" + str(iteration) + ".pth"
+                meta = _build_mmcv_checkpoint_meta()
                 save_checkpoint(model, filename, optimizer=optimizer, meta=meta)
+                _cleanup_checkpoints(cfg.OUTPUT_DIR, keep_last=3)
             else:
                         
                 checkpointer.save("model_{:07d}".format(iteration), **arguments)
                 if iteration == max_iter:
                     checkpointer.save("model_final", **arguments)
+                _cleanup_detectron_checkpoints(cfg.OUTPUT_DIR, keep_last=3, keep_model_final=True)
         
         val_result = None 
         if iteration % cfg.SOLVER.VAL_PERIOD == 0:  # 
@@ -754,6 +859,55 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
              if output_folder:
                  mkdir(output_folder)
              val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder=output_folder)
+             if cfg.MODEL.RELATION_ON and output_folder:
+                 mode = _get_sgg_mode(cfg)
+                 f1_target_ks = (50, 100, 200)
+                 f1_values = []
+                 dataset_names = tuple(cfg.DATASETS.VAL)
+                 for dataset_name in dataset_names:
+                     result_dict_path = os.path.join(output_folder, dataset_name, "result_dict.pytorch")
+                     result_dict = _load_result_dict(result_dict_path)
+                     if result_dict is None:
+                         continue
+                     f1_avg, per_k = _compute_f1_from_result_dict(result_dict, mode, f1_target_ks)
+                     f1_values.append(f1_avg)
+                     parts = []
+                     for k in f1_target_ks:
+                         v = per_k.get(int(k))
+                         if not v:
+                             continue
+                         parts.append(
+                             "F1@{}={:.4f}(R={:.4f},mR={:.4f})".format(k, v["F1"], v["R"], v["mR"])
+                         )
+                     logger.info("[val][{}][{}] F1(avg)={:.4f} {}".format(mode, dataset_name, f1_avg, " ".join(parts)))
+
+                 if len(f1_values) > 0:
+                     f1_avg_all = float(sum(f1_values) / len(f1_values))
+                     logger.info("[val][{}] F1(avg) over {} = {:.4f}".format(mode, dataset_names, f1_avg_all))
+                     if f1_avg_all > best_f1_avg:
+                         best_f1_avg = f1_avg_all
+                         best_f1_iter = iteration
+                         logger.info("[best] iteration={} F1(avg)={:.4f}".format(best_f1_iter, best_f1_avg))
+                         if cfg.OUTPUT_DIR:
+                             if cfg.Type != "CV":
+                                 best_path = os.path.join(cfg.OUTPUT_DIR, "best_epoch.pth")
+                                 meta = _build_mmcv_checkpoint_meta()
+                                 save_checkpoint(model, best_path, optimizer=optimizer, meta=meta)
+                             else:
+                                 last_checkpoint_file = os.path.join(cfg.OUTPUT_DIR, "last_checkpoint")
+                                 prev_last = None
+                                 try:
+                                     with open(last_checkpoint_file, "r") as f:
+                                         prev_last = f.read()
+                                 except Exception:
+                                     prev_last = None
+                                 checkpointer.save("best_epoch", **arguments)
+                                 if prev_last is not None:
+                                     try:
+                                         with open(last_checkpoint_file, "w") as f:
+                                             f.write(prev_last)
+                                     except Exception:
+                                         pass
      
 
         if cfg.SOLVER.SCHEDULE.TYPE == "WarmupReduceLROnPlateau":

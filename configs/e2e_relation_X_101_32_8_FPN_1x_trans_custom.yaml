@@ -213,6 +213,7 @@ TEST:
     SYNC_GATHER: True      # turn on will slow down the evaluation to solve the sgdet test out of memory problem
     REQUIRE_OVERLAP: False
     LATER_NMS_PREDICTION_THRES: 0.5
+    RECALL_K: (20, 50, 100)
   CUSTUM_EVAL: False       # eval SGDet model on custum images, output a json
   CUSTUM_PATH: '.'         # the folder that contains the custum images, only jpg files are allowed  
 
