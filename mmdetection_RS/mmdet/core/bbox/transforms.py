@@ -290,6 +290,7 @@ def obb2hbb(rbboxes, version='oc'):
         raise NotImplementedError
     return results
 
+
 def hbb2obb(hbboxes, version='oc'):
     """Convert horizontal bounding boxes to oriented bounding boxes.
 
@@ -309,6 +310,7 @@ def hbb2obb(hbboxes, version='oc'):
     else:
         raise NotImplementedError
     return results
+
 
 def obb2hbb_oc(rbboxes):
     """Convert oriented bounding boxes to horizontal bounding boxes.
@@ -386,6 +388,7 @@ def obb2hbb_le90(obboxes):
     obboxes = torch.where((_w >= _h)[..., None], obboxes1, obboxes2)
     return obboxes
 
+
 def hbb2obb_oc(hbboxes):
     """Convert horizontal bounding boxes to oriented bounding boxes.
 
@@ -443,6 +446,7 @@ def hbb2obb_le90(hbboxes):
     obboxes = torch.where((w >= h)[..., None], obboxes1, obboxes2)
     return obboxes
 
+
 def obb2poly_le135(rboxes):
     """Convert oriented bounding boxes to polygons.
 
@@ -470,6 +474,7 @@ def obb2poly_le135(rboxes):
     polys[:, 1::2] += y_ctr.unsqueeze(1)
     return polys.contiguous()
 
+
 def obb2poly_oc(rboxes):
     """Convert oriented bounding boxes to polygons.
 
@@ -494,6 +499,7 @@ def obb2poly_oc(rboxes):
     p4x, p4y = x - wx + hx, y - wy + hy
     return torch.stack([p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y], dim=-1)
 
+
 def dist_torch(point1, point2):
     """Calculate the distance between two points.
 
@@ -505,6 +511,7 @@ def dist_torch(point1, point2):
         distance (torch.Tensor): shape(n, 1).
     """
     return torch.norm(point1 - point2, dim=-1)
+
 
 def poly2obb_oc(polys):
     """Convert polygons to oriented bounding boxes.

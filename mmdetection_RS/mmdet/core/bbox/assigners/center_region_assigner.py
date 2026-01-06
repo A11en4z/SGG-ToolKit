@@ -188,8 +188,8 @@ class CenterRegionAssigner(BaseAssigner):
             bbox_and_gt_core_overlaps > self.min_pos_iof)  # shape (n, k)
 
         is_bbox_in_gt_shadow = (
-            self.iou_calculator(bboxes, gt_shadow, mode='iof') >
-            self.min_pos_iof)
+            self.iou_calculator(bboxes, gt_shadow, mode='iof')
+            > self.min_pos_iof)
         # Rule out center effective positive pixels
         is_bbox_in_gt_shadow &= (~is_bbox_in_gt_core)
 

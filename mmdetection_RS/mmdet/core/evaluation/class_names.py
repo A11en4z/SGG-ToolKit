@@ -81,8 +81,14 @@ def coco_classes():
     #    'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
     #    'scissors', 'teddy_bear', 'hair_drier', 'toothbrush'
     #]
-    return ['ship','boat','crane','goods_yard','tank','storehouse','breakwater','dock','airplane','boarding_bridge','runway','taxiway','terminal','apron','gas_station','truck','car','truck_parking','car_parking','bridge','cooling_tower','chimney','vapor','smoke','genset','coal_yard'
+    return [
+        'ship', 'boat', 'crane', 'goods_yard', 'tank', 'storehouse',
+        'breakwater', 'dock', 'airplane', 'boarding_bridge', 'runway',
+        'taxiway', 'terminal', 'apron', 'gas_station', 'truck', 'car',
+        'truck_parking', 'car_parking', 'bridge', 'cooling_tower', 'chimney',
+        'vapor', 'smoke', 'genset', 'coal_yard'
     ]
+
 
 def cityscapes_classes():
     return [

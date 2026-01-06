@@ -20,17 +20,19 @@ from mmdet.utils import (build_ddp, build_dp, compat_cfg, get_device,
                          replace_cfg_vals, setup_multi_processes,
                          update_data_root)
 
+
 # torch.cuda.set_device(2)
 def parse_args():
     parser = argparse.ArgumentParser(
         description='MMDet test (and eval) a model')
-    parser.add_argument('--config',default='', help='train config file path')
-    parser.add_argument('--checkpoint',default='', help='')
+    parser.add_argument('--config', default='', help='train config file path')
+    parser.add_argument('--checkpoint', default='', help='')
     parser.add_argument(
         '--work-dir',
         default='RSLEAP_HBB',
         help='the directory to save the file containing evaluation metrics')
-    parser.add_argument('--out',default="", help='output result file in pickle format')
+    parser.add_argument(
+        '--out', default="", help='output result file in pickle format')
     parser.add_argument(
         '--fuse-conv-bn',
         action='store_true',

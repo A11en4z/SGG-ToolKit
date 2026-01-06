@@ -218,8 +218,8 @@ class ATSSAssigner(BaseAssigner):
         overlaps_inf = overlaps_inf.view(num_gt, -1).t()
 
         max_overlaps, argmax_overlaps = overlaps_inf.max(dim=1)
-        assigned_gt_inds[
-            max_overlaps != -INF] = argmax_overlaps[max_overlaps != -INF] + 1
+        assigned_gt_inds[max_overlaps !=
+                         -INF] = argmax_overlaps[max_overlaps != -INF] + 1
 
         if gt_labels is not None:
             assigned_labels = assigned_gt_inds.new_full((num_bboxes, ), -1)

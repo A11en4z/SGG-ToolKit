@@ -2927,8 +2927,8 @@ class CopyPaste:
 
         # filter totally occluded objects
         bboxes_inds = np.all(
-            np.abs(
-                (updated_dst_bboxes - dst_bboxes)) <= self.bbox_occluded_thr,
+            np.abs((updated_dst_bboxes - dst_bboxes))
+            <= self.bbox_occluded_thr,
             axis=-1)
         masks_inds = updated_dst_masks.masks.sum(
             axis=(1, 2)) > self.mask_occluded_thr

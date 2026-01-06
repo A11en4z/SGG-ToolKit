@@ -301,13 +301,24 @@ class ROIRelationHead(torch.nn.Module):
         # should corresponding to all the functions and layers after the self.context class
         # refine_logits, relation_logits, add_losses = self.predictor(proposals, rel_pair_idxs, rel_labels, rel_binarys, roi_features, union_features, logger)
 
-        refine_logits, relation_logits, add_losses= self.predictor(proposals,
-                                                                                rel_pair_idxs,
-                                                                                rel_labels,
-                                                                                rel_binarys,
-                                                                                roi_features,
-                                                                                union_features,
-                                                                                logger)
+        predictor_out = self.predictor(
+            proposals,
+            rel_pair_idxs,
+            rel_labels,
+            rel_binarys,
+            roi_features,
+            union_features,
+            logger,
+        )
+        if isinstance(predictor_out, (list, tuple)):
+            if len(predictor_out) == 3:
+                refine_logits, relation_logits, add_losses = predictor_out
+            elif len(predictor_out) == 4:
+                refine_logits, relation_logits, add_losses, _ = predictor_out
+            else:
+                raise ValueError("Unexpected predictor outputs length: {}".format(len(predictor_out)))
+        else:
+            raise ValueError("Unexpected predictor outputs type: {}".format(type(predictor_out)))
 
 
 

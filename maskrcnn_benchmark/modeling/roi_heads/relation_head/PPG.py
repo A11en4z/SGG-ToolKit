@@ -14,7 +14,24 @@ import math
 from mmcv.ops import box_iou_rotated
 import cv2
 
+'''
+概括PPG的原理
 
+PPG（Pairwise Polygon Geometry)原理概括：
+1. 输入:给定一批目标检测框（oriented bbox)及其类别标签,以及它们之间的候选关系对。
+2. 几何特征提取：
+   - 将每对框的8角点坐标拼成16维向量,并计算IoU、中心距离、对角线比、面积比等7维几何度量。
+   - 对两框的类别分别做48维one-hot编码,与7维几何向量拼接,得到103维联合特征。
+3. 去噪自编码：
+   - 用两个级联的轻量全连接自编码器（Autoencoder1→Autoencoder2)对103维特征进行压缩-重构。
+   - 计算重构误差（MSE)作为该关系对的“几何一致性得分”：误差越小,说明这对框的空间布局越符合训练集中常见模式,越可能是真实关系。
+4. 筛选：
+   - 对所有候选对的误差得分升序排列,取Top-K（如10 000)低误差对作为最终保留的关系候选,返回其索引
+
+总结：实际上还是根据内部知识来进行筛选的,只是用了一个简单的自编码模型来进行筛选。
+我的研究方向一定是用外部知识来筛选，携带外部知识的，比如大模型的知识来筛选。
+我也可以缝合一个内外知识综合的关系剪枝器，一条分支走内部知识，一条分支走大模型知识，两条分支分别打分并综合评估。
+'''
 
 class PPG(nn.Module):
     def __init__(self):
@@ -229,7 +246,7 @@ class PPG(nn.Module):
 
         # feature, dist = self.calculate_spatialOriented(head_boxes, tail_boxes, fu_pos_label, img_size)  
 
-        batch_size = 1000000  # 设定 batch_size，具体数值可调整
+        batch_size = 1000000  # 设定 batch_size,具体数值可调整
         num_samples = head_boxes.shape[0]
 
         if num_samples  > 8000000:

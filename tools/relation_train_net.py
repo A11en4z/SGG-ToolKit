@@ -5,10 +5,13 @@ Basic training script for PyTorch
 import copy
 import argparse
 import datetime
+import gzip
 import os
 import time
 import os.path as osp
 import re
+import shutil
+import tarfile
 import torch
 from mmcv.runner.checkpoint import save_checkpoint
 import warnings
@@ -257,6 +260,27 @@ def _find_best_epoch_checkpoint(output_dir: str) -> str:
     return best_path
 
 
+def _cleanup_best_epoch_checkpoints(output_dir: str, keep_paths=()):
+    """删除 output_dir 下多余的 best_epoch checkpoint，仅保留 keep_paths 中列出的文件。"""
+    if not output_dir or not os.path.isdir(output_dir):
+        return
+    keep_paths = {os.path.abspath(p) for p in keep_paths if p}
+    patterns = (
+        re.compile(r"^best_epoch\.pth$"),
+        re.compile(r"^best_epoch_(\d+)\.pth$"),
+    )
+    for name in os.listdir(output_dir):
+        if not any(p.match(name) for p in patterns):
+            continue
+        path = os.path.abspath(os.path.join(output_dir, name))
+        if path in keep_paths:
+            continue
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
 def _build_mmcv_checkpoint_meta():
     """构造 mmcv.save_checkpoint 所需的 meta 信息。"""
     meta = {}
@@ -270,6 +294,117 @@ def _build_mmcv_checkpoint_meta():
         'arch_dam', 'roundabout', 'baseball_diamond', 'stadium', 'containment_vessel'
     )
     return meta
+
+
+def _format_bytes(num_bytes: int) -> str:
+    """将字节数格式化为可读字符串（B/KB/MB/GB/TB）。"""
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = float(max(int(num_bytes), 0))
+    for u in units:
+        if size < 1024.0 or u == units[-1]:
+            if u == "B":
+                return "{}{}".format(int(size), u)
+            return "{:.2f}{}".format(size, u)
+        size /= 1024.0
+    return "{:.2f}TB".format(size)
+
+
+def _dir_size_bytes(path: str) -> int:
+    """递归统计目录大小（字节），目录不存在时返回 0。"""
+    if not path or not os.path.isdir(path):
+        return 0
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                total += os.path.getsize(fp)
+            except Exception:
+                pass
+    return int(total)
+
+
+def _get_inference_compress_options(cfg):
+    """从 cfg/环境变量读取 inference 压缩相关开关与参数。"""
+    env_flag = os.environ.get("SGG_COMPRESS_INFERENCE", "").strip().lower()
+    env_enabled = env_flag in ("1", "true", "yes", "y", "on")
+
+    inf_cfg = getattr(cfg, "INFERENCE", None)
+    enabled = bool(getattr(inf_cfg, "COMPRESS_OUTPUT", False)) or env_enabled
+    compresslevel = int(getattr(inf_cfg, "COMPRESS_LEVEL", 1) if inf_cfg is not None else 1)
+    delete_after = bool(getattr(inf_cfg, "DELETE_AFTER_COMPRESS", True) if inf_cfg is not None else True)
+    min_size_mb = float(getattr(inf_cfg, "COMPRESS_MIN_SIZE_MB", 0) if inf_cfg is not None else 0)
+    on_val = bool(getattr(inf_cfg, "COMPRESS_ON_VAL", True) if inf_cfg is not None else True)
+    on_test = bool(getattr(inf_cfg, "COMPRESS_ON_TEST", True) if inf_cfg is not None else True)
+    return dict(
+        enabled=enabled,
+        compresslevel=max(1, min(int(compresslevel), 9)),
+        delete_after=delete_after,
+        min_size_bytes=int(max(min_size_mb, 0.0) * 1024 * 1024),
+        on_val=on_val,
+        on_test=on_test,
+    )
+
+
+def _compress_dir_to_targz(src_dir: str, dst_targz_path: str, compresslevel: int, delete_after: bool, logger=None):
+    """将目录打包为 .tar.gz，并可选删除原目录；过程耗时与压缩比会写入日志。"""
+    if not src_dir or not os.path.isdir(src_dir):
+        return ""
+    dst_dir = os.path.dirname(os.path.abspath(dst_targz_path))
+    if dst_dir:
+        os.makedirs(dst_dir, exist_ok=True)
+
+    src_dir = os.path.abspath(src_dir)
+    dst_targz_path = os.path.abspath(dst_targz_path)
+    tmp_path = dst_targz_path + ".tmp"
+
+    start = time.time()
+    src_size = _dir_size_bytes(src_dir)
+
+    if logger is not None:
+        logger.info("[compress] start: {} -> {} (size={})".format(src_dir, dst_targz_path, _format_bytes(src_size)))
+
+    try:
+        for p in (tmp_path, dst_targz_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+        with open(tmp_path, "wb") as raw_f:
+            with gzip.GzipFile(fileobj=raw_f, mode="wb", compresslevel=int(compresslevel)) as gz_f:
+                with tarfile.open(fileobj=gz_f, mode="w") as tar:
+                    tar.add(src_dir, arcname=os.path.basename(src_dir))
+
+        os.replace(tmp_path, dst_targz_path)
+        dst_size = 0
+        try:
+            dst_size = int(os.path.getsize(dst_targz_path))
+        except Exception:
+            dst_size = 0
+
+        if delete_after:
+            try:
+                shutil.rmtree(src_dir)
+            except Exception:
+                pass
+
+        cost = time.time() - start
+        if logger is not None:
+            ratio = (float(dst_size) / float(src_size)) if src_size > 0 else 0.0
+            logger.info(
+                "[compress] done: {} (archive_size={}, ratio={:.3f}, time={:.2f}s, deleted_src={})".format(
+                    dst_targz_path, _format_bytes(dst_size), ratio, cost, bool(delete_after)
+                )
+            )
+        return dst_targz_path
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 def parse_args_OBB(mmcf = None,mmwei = None):
@@ -975,6 +1110,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
                          best_f1_iter = iteration
                          logger.info("[best] iteration={} F1(avg)={:.4f}".format(best_f1_iter, best_f1_avg))
                          if cfg.OUTPUT_DIR:
+                             _cleanup_best_epoch_checkpoints(cfg.OUTPUT_DIR)
                              if cfg.Type != "CV":
                                  best_path = os.path.join(cfg.OUTPUT_DIR, "best_epoch_{}.pth".format(iteration))
                                  meta = _build_mmcv_checkpoint_meta()
@@ -994,7 +1130,31 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
                                              f.write(prev_last)
                                      except Exception:
                                          pass
-     
+
+             compress_opts = _get_inference_compress_options(cfg)
+             if compress_opts["enabled"] and compress_opts["on_val"] and output_folder and get_rank() == 0:
+                 try:
+                     out_abs = os.path.abspath(output_folder)
+                     infer_root = os.path.abspath(os.path.join(cfg.OUTPUT_DIR, "inference")) if cfg.OUTPUT_DIR else ""
+                     if infer_root and out_abs.startswith(infer_root):
+                         dataset_names_for_compress = tuple(cfg.DATASETS.VAL)
+                         for ds_name in dataset_names_for_compress:
+                             ds_dir = os.path.join(output_folder, ds_name)
+                             if not os.path.isdir(ds_dir):
+                                 continue
+                             ds_size = _dir_size_bytes(ds_dir)
+                             if ds_size < compress_opts["min_size_bytes"]:
+                                 continue
+                             _compress_dir_to_targz(
+                                 ds_dir,
+                                 ds_dir + ".tar.gz",
+                                 compresslevel=compress_opts["compresslevel"],
+                                 delete_after=compress_opts["delete_after"],
+                                 logger=logger,
+                             )
+                 except Exception as e:
+                     logger.info("[compress] failed: {}".format(e))
+             synchronize()
 
         if cfg.SOLVER.SCHEDULE.TYPE == "WarmupReduceLROnPlateau":
             scheduler.step(val_result, epoch=iteration)
@@ -1121,6 +1281,24 @@ def run_test(cfg, model, distributed, logger, m = None,CCM = None):
             logger=logger,
             val=val,
         )
+        synchronize()
+        compress_opts = _get_inference_compress_options(cfg)
+        if compress_opts["enabled"] and compress_opts["on_test"] and output_folder and get_rank() == 0:
+            try:
+                out_abs = os.path.abspath(output_folder)
+                infer_root = os.path.abspath(os.path.join(cfg.OUTPUT_DIR, "inference")) if cfg.OUTPUT_DIR else ""
+                if infer_root and out_abs.startswith(infer_root):
+                    out_size = _dir_size_bytes(output_folder)
+                    if out_size >= compress_opts["min_size_bytes"]:
+                        _compress_dir_to_targz(
+                            output_folder,
+                            output_folder + ".tar.gz",
+                            compresslevel=compress_opts["compresslevel"],
+                            delete_after=compress_opts["delete_after"],
+                            logger=logger,
+                        )
+            except Exception as e:
+                logger.info("[compress] failed: {}".format(e))
         synchronize()
 
 

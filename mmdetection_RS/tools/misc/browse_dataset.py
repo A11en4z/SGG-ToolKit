@@ -107,8 +107,8 @@ def main():
             sem_labels = np.unique(gt_seg)
             all_labels = np.concatenate((gt_labels, sem_labels), axis=0)
             all_labels, counts = np.unique(all_labels, return_counts=True)
-            stuff_labels = all_labels[np.logical_and(counts < 2,
-                                                     all_labels != pad_value)]
+            stuff_labels = all_labels[np.logical_and(counts < 2, all_labels
+                                                     != pad_value)]
             stuff_masks = gt_seg[None] == stuff_labels[:, None, None]
             gt_labels = np.concatenate((gt_labels, stuff_labels), axis=0)
             gt_masks = np.concatenate((gt_masks, stuff_masks.astype(np.uint8)),

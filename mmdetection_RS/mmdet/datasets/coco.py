@@ -36,7 +36,11 @@ class CocoDataset(CustomDataset):
     #           'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
     #           'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock',
     #           'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush')
-    CLASSES = ('ship','boat','crane','goods_yard','tank','storehouse','breakwater','dock','airplane','boarding_bridge','runway','taxiway','terminal','apron','gas_station','truck','car','truck_parking','car_parking','bridge','cooling_tower','chimney','vapor','smoke','genset','coal_yard')
+    CLASSES = ('ship', 'boat', 'crane', 'goods_yard', 'tank', 'storehouse',
+               'breakwater', 'dock', 'airplane', 'boarding_bridge', 'runway',
+               'taxiway', 'terminal', 'apron', 'gas_station', 'truck', 'car',
+               'truck_parking', 'car_parking', 'bridge', 'cooling_tower',
+               'chimney', 'vapor', 'smoke', 'genset', 'coal_yard')
 
     PALETTE = [(220, 20, 60), (119, 11, 32), (0, 0, 142), (0, 0, 230),
                (106, 0, 228), (0, 60, 100), (0, 80, 100), (0, 0, 70),

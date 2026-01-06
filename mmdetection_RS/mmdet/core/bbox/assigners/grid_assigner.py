@@ -126,8 +126,9 @@ class GridAssigner(BaseAssigner):
         # shape of gt_max_overlaps == gt_argmax_overlaps == num_gts
         gt_max_overlaps, gt_argmax_overlaps = overlaps.max(dim=1)
 
-        pos_inds = (max_overlaps >
-                    self.pos_iou_thr) & box_responsible_flags.type(torch.bool)
+        pos_inds = (max_overlaps
+                    > self.pos_iou_thr) & box_responsible_flags.type(
+                        torch.bool)
         assigned_gt_inds[pos_inds] = argmax_overlaps[pos_inds] + 1
 
         # 4. assign positive to max overlapped anchors within responsible cell

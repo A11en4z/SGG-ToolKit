@@ -77,9 +77,9 @@ def update_data_root(cfg, logger=None):
     cfg.data_root = dst_root
 
 
-_torch_version_div_indexing = (
-    'parrots' not in TORCH_VERSION
-    and digit_version(TORCH_VERSION) >= digit_version('1.8'))
+_torch_version_div_indexing = ('parrots' not in TORCH_VERSION
+                               and digit_version(TORCH_VERSION)
+                               >= digit_version('1.8'))
 
 
 def floordiv(dividend, divisor, rounding_mode='trunc'):

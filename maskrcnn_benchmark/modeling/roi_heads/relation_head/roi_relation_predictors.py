@@ -1010,22 +1010,23 @@ class PrototypeEmbeddingNetwork(nn.Module):
 
             ### Prototype Regularization  ---- Euclidean distance 51 --31 1124
             gamma2 = 7.0
-            predicate_proto_a = predicate_proto.unsqueeze(dim=1).expand(-1, 59, -1)
-            predicate_proto_b = predicate_proto.detach().unsqueeze(dim=0).expand(59, -1, -1)
+            num_predicates = int(predicate_proto.size(0))
+            predicate_proto_a = predicate_proto.unsqueeze(dim=1).expand(-1, num_predicates, -1)
+            predicate_proto_b = predicate_proto.detach().unsqueeze(dim=0).expand(num_predicates, -1, -1)
             proto_dis_mat = (predicate_proto_a - predicate_proto_b).norm(dim=2) ** 2  # Distance Matrix D, dij = ||ci - cj||_2^2
             sorted_proto_dis_mat, _ = torch.sort(proto_dis_mat, dim=1)
             topK_proto_dis = sorted_proto_dis_mat[:, :2].sum(dim=1) / 1   # obtain d-, where k2 = 1
-            dist_loss = torch.max(torch.zeros(59).cuda(), -topK_proto_dis + gamma2).mean()  # Lr_euc = max(0, -(d-) + gamma2)
+            dist_loss = torch.max(torch.zeros(num_predicates, device=topK_proto_dis.device), -topK_proto_dis + gamma2).mean()  # Lr_euc = max(0, -(d-) + gamma2)
             add_losses.update({"dist_loss2": dist_loss})
             ### end
 
             ###  Prototype-based Learning  ---- Euclidean distance
             rel_labels = cat(rel_labels, dim=0)
             gamma1 = 1.0
-            rel_rep_expand = rel_rep.unsqueeze(dim=1).expand(-1, 59, -1)  # r
+            rel_rep_expand = rel_rep.unsqueeze(dim=1).expand(-1, num_predicates, -1)  # r
             predicate_proto_expand = predicate_proto.unsqueeze(dim=0).expand(rel_labels.size(0), -1, -1)  # ci
             distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2    # Distance Set G, gi = ||r-ci||_2^2   # nums,31
-            mask_neg = torch.ones(rel_labels.size(0), 59).cuda()  # nums,31
+            mask_neg = torch.ones(rel_labels.size(0), num_predicates, device=distance_set.device)  # nums,31
             mask_neg[torch.arange(rel_labels.size(0)), rel_labels] = 0 ##  torch.arange(rel_labels.size(0)) 0-90,  rel_labels 长为90
             distance_set_neg = distance_set * mask_neg
             distance_set_pos = distance_set[torch.arange(rel_labels.size(0)), rel_labels]  # gt i.e., g+

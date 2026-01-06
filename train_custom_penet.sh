@@ -33,7 +33,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
-MODEL_NAME='LOBB_RPCM_predcls_train'
+MODEL_NAME='LOBB_PENet_predcls_train'
 
 path="./Checkpoints/${MODEL_NAME}_$(date +%Y%m%d_%H%M%S)/"
 mkdir -p "$path"
@@ -45,7 +45,7 @@ echo "Weights: $WEIGHTS"
 
 "${PYTHON_CMD[@]}" -u \
  tools/relation_train_net.py \
- --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_custom.yaml" \
+ --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_custom_penet.yaml" \
  --mm_config "$MMCONFIG" \
  --mm_weight "$WEIGHTS" \
  DATASETS.TRAIN "('DIOR_with_attribute_train',)" \
@@ -54,7 +54,7 @@ echo "Weights: $WEIGHTS"
  MODEL.ROI_RELATION_HEAD.USE_GT_BOX True \
  MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL True \
  MODEL.ROI_RELATION_HEAD.PREDICT_USE_BIAS False \
- MODEL.ROI_RELATION_HEAD.PREDICTOR RPCM \
+ MODEL.ROI_RELATION_HEAD.PREDICTOR "PrototypeEmbeddingNetwork" \
  MODEL.ROI_BOX_HEAD.NUM_CLASSES 21  \
  MODEL.ROI_RELATION_HEAD.NUM_CLASSES 23 \
  MODEL.ROI_ATTRIBUTE_HEAD.NUM_ATTRIBUTES 2 \
@@ -74,5 +74,8 @@ echo "Weights: $WEIGHTS"
  SOLVER.GRAD_NORM_CLIP 5.0 \
  AUTO_LONGTAIL_IDS True \
  Type "Large_RS_OBB" \
- filter_method "PPG" \
+ filter_method "random_filter" \
+ INFERENCE.COMPRESS_OUTPUT True \
+ INFERENCE.COMPRESS_LEVEL 1 \
+ INFERENCE.COMPRESS_MIN_SIZE_MB 100 \
  2>&1 | tee -a "${path}/console.log"

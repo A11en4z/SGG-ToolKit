@@ -1,4 +1,5 @@
 import sys
+import os
 import json
 sys.path.append('')
 import numpy as np
@@ -19,6 +20,24 @@ from maskrcnn_benchmark.modeling.roi_heads.relation_head.model_msg_passing impor
 from maskrcnn_benchmark.modeling.roi_heads.relation_head.classifier import build_classifier
 
 
+def _resolve_hetsgg_labels_json_path(cfg):
+    """解析 HetSGG 所需 labels.json 路径，优先环境变量，其次仓库默认路径，最后兼容旧硬编码路径。"""
+    env_path = os.environ.get("HETSGG_LABELS_JSON", "").strip()
+    if env_path and os.path.isfile(env_path):
+        return env_path
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.."))
+    default_path = os.path.join(repo_root, "data", "labels.json")
+    if os.path.isfile(default_path):
+        return default_path
+
+    legacy_path = "/media/dell/data1/WTZ/SGG_Frame/data/labels.json"
+    if os.path.isfile(legacy_path):
+        return legacy_path
+
+    raise FileNotFoundError(
+        "HetSGG labels.json not found. Tried HETSGG_LABELS_JSON, {}, {}.".format(default_path, legacy_path)
+    )
 
 
 class HetSGG(torch.nn.Module):
@@ -37,7 +56,8 @@ class HetSGG(torch.nn.Module):
         num_classes_obj = cfg.MODEL.ROI_BOX_HEAD.NUM_CLASSES
         num_classes_pred = cfg.MODEL.ROI_RELATION_HEAD.NUM_CLASSES
         
-        self.vg_cat_dict = json.load(open("/media/dell/data1/WTZ/SGG_Frame/data/labels.json", 'r'))
+        labels_json_path = _resolve_hetsgg_labels_json_path(cfg)
+        self.vg_cat_dict = json.load(open(labels_json_path, 'r'))
 
         self.vg_map_arr = self.compute_category_mapping_array()
 

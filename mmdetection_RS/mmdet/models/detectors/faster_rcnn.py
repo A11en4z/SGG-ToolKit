@@ -26,6 +26,7 @@ from maskrcnn_benchmark.modeling.detector.two_stage_RS_HBB import TwoStageDetect
 #             pretrained=pretrained,
 #             init_cfg=init_cfg)
 
+
 @DETECTORS.register_module()
 class FasterRCNN(TwoStageDetector_RS_HBB):
     """Implementation of `Faster R-CNN <https://arxiv.org/abs/1506.01497>`_"""
