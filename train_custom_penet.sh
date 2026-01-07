@@ -74,7 +74,7 @@ echo "Weights: $WEIGHTS"
  SOLVER.GRAD_NORM_CLIP 5.0 \
  AUTO_LONGTAIL_IDS True \
  Type "Large_RS_OBB" \
- filter_method "random_filter" \
+ filter_method "PPG" \
  INFERENCE.COMPRESS_OUTPUT True \
  INFERENCE.COMPRESS_LEVEL 1 \
  INFERENCE.COMPRESS_MIN_SIZE_MB 100 \
