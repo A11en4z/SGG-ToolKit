@@ -170,19 +170,13 @@ def do_vg_evaluation(
 
         metrics_ks = tuple(recall_k)
         metrics = _summarize_relation_metrics(result_dict, mode, metrics_ks)
-        f1_target_ks = (50, 100, 200)
-        f1_target_present = [k for k in f1_target_ks if k in metrics]
-        if len(f1_target_present) == 0:
-            f1_avg = float(np.mean([v["F1"] for v in metrics.values()])) if len(metrics) > 0 else 0.0
-            f1_avg_ks = metrics_ks
-        else:
-            f1_avg = float(np.mean([metrics[k]["F1"] for k in f1_target_present]))
-            f1_avg_ks = tuple(f1_target_present)
+        f1_avg_ks = metrics_ks
+        f1_avg = float(np.mean([metrics[k]["F1"] for k in f1_avg_ks])) if len(f1_avg_ks) > 0 else 0.0
 
-        result_str += "F1 (harmonic mean of R and mR): "
+        result_str += "F1: "
         for k in metrics_ks:
             v = metrics[k]
-            result_str += " F1 @ %d: %.4f R=%.4f, mR=%.4f;" % (k, v["F1"], v["R"], v["mR"])
+            result_str += " F1 @ %d: %.4f;" % (k, v["F1"])
         result_str += "\n"
         result_str += "F1(avg) over {}: {:.4f}\n".format(f1_avg_ks, f1_avg)
         result_str += '=' * 100 + '\n'

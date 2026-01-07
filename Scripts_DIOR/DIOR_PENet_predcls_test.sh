@@ -31,6 +31,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
+export SEED="${SEED:-1029}"
 
 MODEL_NAME='DIOR_PENet_predcls_test'
 path="./Checkpoints/${MODEL_NAME}/"
@@ -41,6 +42,7 @@ mkdir -p "$path"
   --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_custom_penet.yaml" \
   --mm_config "$MMCONFIG" \
   --mm_weight "$WEIGHTS" \
+  SEED $SEED \
   DATASETS.TEST "('DIOR_with_attribute_test',)" \
   MODEL.ROI_RELATION_HEAD.USE_GT_BOX True \
   MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL True \
@@ -58,4 +60,3 @@ mkdir -p "$path"
   Only_test True \
   test_outpath "$path" \
   2>&1 | tee -a "${path}/console.log"
-

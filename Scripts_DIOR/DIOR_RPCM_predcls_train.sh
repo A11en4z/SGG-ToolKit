@@ -31,6 +31,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
+export SEED="${SEED:-1029}"
 
 MODEL_NAME='DIOR_RPCM_predcls_train'
 path="./Checkpoints/${MODEL_NAME}/"
@@ -41,6 +42,7 @@ mkdir -p "$path"
   --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_custom_rpcm.yaml" \
   --mm_config "$MMCONFIG" \
   --mm_weight "$PRETRAIN_WEIGHTS" \
+  SEED $SEED \
   DATASETS.TRAIN "('DIOR_with_attribute_train',)" \
   DATASETS.VAL "('DIOR_with_attribute_val',)" \
   DATASETS.TEST "('DIOR_with_attribute_test',)" \
@@ -72,4 +74,3 @@ mkdir -p "$path"
   INFERENCE.COMPRESS_LEVEL 1 \
   INFERENCE.COMPRESS_MIN_SIZE_MB 100 \
   2>&1 | tee -a "${path}/console.log"
-

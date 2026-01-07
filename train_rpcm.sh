@@ -33,6 +33,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
+export SEED="${SEED:-1029}"
 MODEL_NAME='LOBB_RPCM_predcls_train'
 
 path="./Checkpoints/${MODEL_NAME}_$(date +%Y%m%d_%H%M%S)/"
@@ -48,6 +49,7 @@ echo "Weights: $WEIGHTS"
  --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_custom_rpcm.yaml" \
  --mm_config "$MMCONFIG" \
  --mm_weight "$WEIGHTS" \
+ SEED $SEED \
  DATASETS.TRAIN "('DIOR_with_attribute_train',)" \
  DATASETS.VAL "('DIOR_with_attribute_val',)" \
  DATASETS.TEST "('DIOR_with_attribute_test',)" \

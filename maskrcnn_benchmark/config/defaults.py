@@ -78,6 +78,7 @@ _C.CFA_pre = None
 _C.CONTRA = False
 _C.Sema_F = False 
 _C.Only_val = False
+_C.SEED = 1029
 # -----------------------------------------------------------------------------
 # INPUT
 # -----------------------------------------------------------------------------
@@ -746,8 +747,7 @@ _C.INFERENCE.COMPRESS_OUTPUT = False
 _C.INFERENCE.COMPRESS_LEVEL = 1
 _C.INFERENCE.DELETE_AFTER_COMPRESS = True
 _C.INFERENCE.COMPRESS_MIN_SIZE_MB = 0
-_C.INFERENCE.COMPRESS_ON_VAL = True
-_C.INFERENCE.COMPRESS_ON_TEST = True
+_C.INFERENCE.COMPRESS_AT_END = True
 
 _C.PATHS_CATALOG = os.path.join(os.path.dirname(__file__), "paths_catalog.py")
 _C.PATHS_DATA = os.path.join(os.path.dirname(__file__), "../data/datasets")

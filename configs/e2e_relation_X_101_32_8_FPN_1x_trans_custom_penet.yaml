@@ -1,4 +1,5 @@
 GLOVE_DIR: " "
+SEED: 1029
 INPUT:
   MIN_SIZE_TRAIN: (600,)
   MAX_SIZE_TRAIN: 1000
@@ -195,7 +196,7 @@ Only_val : False
 Only_test : False
 mbs : 512
 ite_resume : 0
-Print_iter: 10
+Print_iter: 20
 outpath : None
 val_outpath : None
 test_outpath : None

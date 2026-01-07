@@ -17,7 +17,7 @@ ENV_PREFIX="$("${PYTHON_CMD[@]}" -c "import sys; print(sys.prefix)")"
 TORCH_LIB_DIR="$("${PYTHON_CMD[@]}" -c "import os,torch; print(os.path.join(os.path.dirname(torch.__file__), \"lib\"))")"
 export LD_LIBRARY_PATH="${ENV_PREFIX}/lib:${TORCH_LIB_DIR}:${LD_LIBRARY_PATH}"
 
-WEIGHTS="Weights/DIOR_RPCM_predcls.pth"
+WEIGHTS="/gz-data/SGG-ToolKit/Checkpoints/LOBB_RPCM_predcls_train_20260105_152516/best_epoch.pth"
 MMCONFIG="configs/RSOBB/DIOR_obb_predcls_sgcls_swinl_800.py"
 
 if [ ! -f "$WEIGHTS" ]; then
@@ -31,6 +31,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
+export SEED="${SEED:-1029}"
 
 MODEL_NAME='DIOR_RPCM_predcls_test'
 path="./Checkpoints/${MODEL_NAME}/"
@@ -41,6 +42,7 @@ mkdir -p "$path"
   --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_custom_rpcm.yaml" \
   --mm_config "$MMCONFIG" \
   --mm_weight "$WEIGHTS" \
+  SEED $SEED \
   DATASETS.TEST "('DIOR_with_attribute_test',)" \
   MODEL.ROI_RELATION_HEAD.USE_GT_BOX True \
   MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL True \
@@ -58,4 +60,3 @@ mkdir -p "$path"
   Only_test True \
   test_outpath "$path" \
   2>&1 | tee -a "${path}/console.log"
-

@@ -74,17 +74,11 @@ try:
 except ImportError:
     raise ImportError('Use APEX for multi-precision via apex.amp')
 from numpy import random
-def seed_torch(seed=1029):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed) # 为了禁止hash随机化，使得实验可复现
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed) # if you are using multi-GPU.
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
+def seed_torch(seed: int, deterministic: bool = True):
+    """设置 Python/NumPy/Torch 随机种子，并可选启用确定性 cuDNN。"""
+    os.environ["PYTHONHASHSEED"] = str(int(seed))
+    set_random_seed(int(seed), deterministic=bool(deterministic))
 import sys
-seed_torch()
 import torch.distributed as dist
 
 from mmcv.runner import (get_dist_info, init_dist, load_checkpoint,
@@ -334,15 +328,13 @@ def _get_inference_compress_options(cfg):
     compresslevel = int(getattr(inf_cfg, "COMPRESS_LEVEL", 1) if inf_cfg is not None else 1)
     delete_after = bool(getattr(inf_cfg, "DELETE_AFTER_COMPRESS", True) if inf_cfg is not None else True)
     min_size_mb = float(getattr(inf_cfg, "COMPRESS_MIN_SIZE_MB", 0) if inf_cfg is not None else 0)
-    on_val = bool(getattr(inf_cfg, "COMPRESS_ON_VAL", True) if inf_cfg is not None else True)
-    on_test = bool(getattr(inf_cfg, "COMPRESS_ON_TEST", True) if inf_cfg is not None else True)
+    at_end = bool(getattr(inf_cfg, "COMPRESS_AT_END", False) if inf_cfg is not None else False)
     return dict(
         enabled=enabled,
         compresslevel=max(1, min(int(compresslevel), 9)),
         delete_after=delete_after,
         min_size_bytes=int(max(min_size_mb, 0.0) * 1024 * 1024),
-        on_val=on_val,
-        on_test=on_test,
+        at_end=at_end,
     )
 
 
@@ -405,6 +397,49 @@ def _compress_dir_to_targz(src_dir: str, dst_targz_path: str, compresslevel: int
                 os.remove(tmp_path)
             except Exception:
                 pass
+
+
+def _compress_once_at_end(cfg, output_dir: str, logger):
+    compress_opts = _get_inference_compress_options(cfg)
+    if not compress_opts["enabled"] or not compress_opts["at_end"]:
+        return
+    if get_rank() != 0:
+        return
+    if not output_dir:
+        return
+    infer_dir = os.path.join(output_dir, "inference")
+    if not os.path.isdir(infer_dir):
+        return
+    size_bytes = _dir_size_bytes(infer_dir)
+    if size_bytes < compress_opts["min_size_bytes"]:
+        return
+    _compress_dir_to_targz(
+        infer_dir,
+        infer_dir + ".tar.gz",
+        compresslevel=compress_opts["compresslevel"],
+        delete_after=compress_opts["delete_after"],
+        logger=logger,
+    )
+
+
+def _compress_folder_once_at_end(cfg, output_folder: str, logger):
+    compress_opts = _get_inference_compress_options(cfg)
+    if not compress_opts["enabled"] or not compress_opts["at_end"]:
+        return
+    if get_rank() != 0:
+        return
+    if not output_folder or not os.path.isdir(output_folder):
+        return
+    size_bytes = _dir_size_bytes(output_folder)
+    if size_bytes < compress_opts["min_size_bytes"]:
+        return
+    _compress_dir_to_targz(
+        output_folder,
+        output_folder + ".tar.gz",
+        compresslevel=compress_opts["compresslevel"],
+        delete_after=compress_opts["delete_after"],
+        logger=logger,
+    )
 
 
 def parse_args_OBB(mmcf = None,mmwei = None):
@@ -967,6 +1002,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         if output_folder:
             mkdir(output_folder)
         val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder=output_folder)
+        _compress_folder_once_at_end(cfg, output_folder, logger)
         sys.exit() 
 
     if cfg.Only_test:
@@ -978,6 +1014,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         if output_folder:
             mkdir(output_folder)
         val_result = run_val(cfg, model, test_data_loaders, distributed, logger, output_folder=output_folder, dataset_names=cfg.DATASETS.TEST)
+        _compress_folder_once_at_end(cfg, output_folder, logger)
         sys.exit() 
 
 
@@ -1063,98 +1100,75 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
                     checkpointer.save("model_final", **arguments)
                 _cleanup_detectron_checkpoints(cfg.OUTPUT_DIR, keep_last=3, keep_model_final=True)
         
-        val_result = None 
-        if iteration % cfg.SOLVER.VAL_PERIOD == 0:  # 
-             output_folder = getattr(cfg, "val_outpath", None)
-             if output_folder in ("None", "none", "null", "NULL", ""):
-                 output_folder = None
-             if output_folder is None:
-                 output_folder = getattr(cfg, "outpath", None)
-             if output_folder in ("None", "none", "null", "NULL", ""):
-                 output_folder = None
-             if output_folder is None and cfg.OUTPUT_DIR:
-                 output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", "val")
-             if output_folder:
-                 mkdir(output_folder)
-             val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder=output_folder)
-             if cfg.MODEL.RELATION_ON and output_folder:
-                 mode = _get_sgg_mode(cfg)
-                 try:
-                     f1_target_ks = tuple(int(k) for k in cfg.TEST.RELATION.RECALL_K)
-                 except Exception:
-                     f1_target_ks = (50, 100, 200)
-                 f1_values = []
-                 dataset_names = tuple(cfg.DATASETS.VAL)
-                 for dataset_name in dataset_names:
-                     result_dict_path = os.path.join(output_folder, dataset_name, "result_dict.pytorch")
-                     result_dict = _load_result_dict(result_dict_path)
-                     if result_dict is None:
-                         continue
-                     f1_avg, per_k = _compute_f1_from_result_dict(result_dict, mode, f1_target_ks)
-                     f1_values.append(f1_avg)
-                     parts = []
-                     for k in f1_target_ks:
-                         v = per_k.get(int(k))
-                         if not v:
-                             continue
-                         parts.append(
-                             "F1@{}={:.4f} R={:.4f} mR={:.4f}".format(k, v["F1"], v["R"], v["mR"])
-                         )
-                     logger.info("[val][{}][{}] F1(avg)={:.4f} {}".format(mode, dataset_name, f1_avg, " ".join(parts)))
+        val_result = None
+        if iteration % cfg.SOLVER.VAL_PERIOD == 0:  #
+            output_folder = getattr(cfg, "val_outpath", None)
+            if output_folder in ("None", "none", "null", "NULL", ""):
+                output_folder = None
+            if output_folder is None:
+                output_folder = getattr(cfg, "outpath", None)
+            if output_folder in ("None", "none", "null", "NULL", ""):
+                output_folder = None
+            if output_folder is None and cfg.OUTPUT_DIR:
+                output_folder = os.path.join(cfg.OUTPUT_DIR, "inference", "val")
+            if output_folder:
+                mkdir(output_folder)
+            val_result = run_val(cfg, model, val_data_loaders, distributed, logger, output_folder=output_folder)
+            if cfg.MODEL.RELATION_ON and output_folder:
+                mode = _get_sgg_mode(cfg)
+                try:
+                    f1_target_ks = tuple(int(k) for k in cfg.TEST.RELATION.RECALL_K)
+                except Exception:
+                    f1_target_ks = (50, 100, 200)
+                f1_values = []
+                dataset_names = tuple(cfg.DATASETS.VAL)
+                for dataset_name in dataset_names:
+                    result_dict_path = os.path.join(output_folder, dataset_name, "result_dict.pytorch")
+                    result_dict = _load_result_dict(result_dict_path)
+                    if result_dict is None:
+                        continue
+                    f1_avg, per_k = _compute_f1_from_result_dict(result_dict, mode, f1_target_ks)
+                    f1_values.append(f1_avg)
+                    parts = []
+                    for k in f1_target_ks:
+                        v = per_k.get(int(k))
+                        if not v:
+                            continue
+                        parts.append("F1@{}={:.4f}".format(k, v["F1"]))
+                    logger.info(
+                        "[val][{}][{}] F1(avg)={:.4f} {}".format(mode, dataset_name, f1_avg, " ".join(parts))
+                    )
 
-                 if len(f1_values) > 0:
-                     f1_avg_all = float(sum(f1_values) / len(f1_values))
-                     logger.info("[val][{}] F1(avg) over {} = {:.4f}".format(mode, dataset_names, f1_avg_all))
-                     if f1_avg_all > best_f1_avg:
-                         best_f1_avg = f1_avg_all
-                         best_f1_iter = iteration
-                         logger.info("[best] iteration={} F1(avg)={:.4f}".format(best_f1_iter, best_f1_avg))
-                         if cfg.OUTPUT_DIR:
-                             _cleanup_best_epoch_checkpoints(cfg.OUTPUT_DIR)
-                             if cfg.Type != "CV":
-                                 best_path = os.path.join(cfg.OUTPUT_DIR, "best_epoch_{}.pth".format(iteration))
-                                 meta = _build_mmcv_checkpoint_meta()
-                                 save_checkpoint(model, best_path, optimizer=optimizer, meta=meta)
-                             else:
-                                 last_checkpoint_file = os.path.join(cfg.OUTPUT_DIR, "last_checkpoint")
-                                 prev_last = None
-                                 try:
-                                     with open(last_checkpoint_file, "r") as f:
-                                         prev_last = f.read()
-                                 except Exception:
-                                     prev_last = None
-                                 checkpointer.save("best_epoch_{:07d}".format(iteration), **arguments)
-                                 if prev_last is not None:
-                                     try:
-                                         with open(last_checkpoint_file, "w") as f:
-                                             f.write(prev_last)
-                                     except Exception:
-                                         pass
+                if len(f1_values) > 0:
+                    f1_avg_all = float(sum(f1_values) / len(f1_values))
+                    logger.info("[val][{}] F1(avg) over {} = {:.4f}".format(mode, dataset_names, f1_avg_all))
+                    if f1_avg_all > best_f1_avg:
+                        best_f1_avg = f1_avg_all
+                        best_f1_iter = iteration
+                        logger.info("[best] iteration={} F1(avg)={:.4f}".format(best_f1_iter, best_f1_avg))
+                        if cfg.OUTPUT_DIR:
+                            _cleanup_best_epoch_checkpoints(cfg.OUTPUT_DIR)
+                            if cfg.Type != "CV":
+                                best_path = os.path.join(cfg.OUTPUT_DIR, "best_epoch_{}.pth".format(iteration))
+                                meta = _build_mmcv_checkpoint_meta()
+                                save_checkpoint(model, best_path, optimizer=optimizer, meta=meta)
+                            else:
+                                last_checkpoint_file = os.path.join(cfg.OUTPUT_DIR, "last_checkpoint")
+                                prev_last = None
+                                try:
+                                    with open(last_checkpoint_file, "r") as f:
+                                        prev_last = f.read()
+                                except Exception:
+                                    prev_last = None
+                                checkpointer.save("best_epoch_{:07d}".format(iteration), **arguments)
+                                if prev_last is not None:
+                                    try:
+                                        with open(last_checkpoint_file, "w") as f:
+                                            f.write(prev_last)
+                                    except Exception:
+                                        pass
 
-             compress_opts = _get_inference_compress_options(cfg)
-             if compress_opts["enabled"] and compress_opts["on_val"] and output_folder and get_rank() == 0:
-                 try:
-                     out_abs = os.path.abspath(output_folder)
-                     infer_root = os.path.abspath(os.path.join(cfg.OUTPUT_DIR, "inference")) if cfg.OUTPUT_DIR else ""
-                     if infer_root and out_abs.startswith(infer_root):
-                         dataset_names_for_compress = tuple(cfg.DATASETS.VAL)
-                         for ds_name in dataset_names_for_compress:
-                             ds_dir = os.path.join(output_folder, ds_name)
-                             if not os.path.isdir(ds_dir):
-                                 continue
-                             ds_size = _dir_size_bytes(ds_dir)
-                             if ds_size < compress_opts["min_size_bytes"]:
-                                 continue
-                             _compress_dir_to_targz(
-                                 ds_dir,
-                                 ds_dir + ".tar.gz",
-                                 compresslevel=compress_opts["compresslevel"],
-                                 delete_after=compress_opts["delete_after"],
-                                 logger=logger,
-                             )
-                 except Exception as e:
-                     logger.info("[compress] failed: {}".format(e))
-             synchronize()
+            synchronize()
 
         if cfg.SOLVER.SCHEDULE.TYPE == "WarmupReduceLROnPlateau":
             scheduler.step(val_result, epoch=iteration)
@@ -1282,23 +1296,6 @@ def run_test(cfg, model, distributed, logger, m = None,CCM = None):
             val=val,
         )
         synchronize()
-        compress_opts = _get_inference_compress_options(cfg)
-        if compress_opts["enabled"] and compress_opts["on_test"] and output_folder and get_rank() == 0:
-            try:
-                out_abs = os.path.abspath(output_folder)
-                infer_root = os.path.abspath(os.path.join(cfg.OUTPUT_DIR, "inference")) if cfg.OUTPUT_DIR else ""
-                if infer_root and out_abs.startswith(infer_root):
-                    out_size = _dir_size_bytes(output_folder)
-                    if out_size >= compress_opts["min_size_bytes"]:
-                        _compress_dir_to_targz(
-                            output_folder,
-                            output_folder + ".tar.gz",
-                            compresslevel=compress_opts["compresslevel"],
-                            delete_after=compress_opts["delete_after"],
-                            logger=logger,
-                        )
-            except Exception as e:
-                logger.info("[compress] failed: {}".format(e))
         synchronize()
 
 
@@ -1371,6 +1368,17 @@ def main(debug=False):
     cfg.merge_from_list(args.opts)
     # cfg.freeze()
 
+    seed_cfg = getattr(cfg, "SEED", 1029)
+    try:
+        seed_cfg_int = None if seed_cfg is None else int(seed_cfg)
+    except Exception:
+        seed_cfg_int = 1029
+    seed = None if seed_cfg_int is None or seed_cfg_int < 0 else seed_cfg_int
+    seed_device = "cuda" if "cuda" in str(cfg.MODEL.DEVICE) else "cpu"
+    seed = init_random_seed(seed, device=seed_device)
+    seed_torch(seed, deterministic=True)
+    cfg.SEED = int(seed)
+
     try:
         from maskrcnn_benchmark.utils.imports import import_file
         from maskrcnn_benchmark.data.datasets.visual_genome import load_info
@@ -1400,6 +1408,7 @@ def main(debug=False):
 
     logger = setup_logger("maskrcnn_benchmark", output_dir, get_rank(),filename=args.log_name)
     logger.info("Using {} GPUs".format(num_gpus))
+    logger.info("Set random seed to {} (rank={})".format(getattr(cfg, "SEED", None), get_rank()))
     logger.info(args)
 
     logger.info("Collecting env info (might take some time)")
@@ -1433,6 +1442,8 @@ def main(debug=False):
                 else:
                     load_checkpoint(model_to_load, best_ckpt, map_location="cpu", strict=False)
         run_test(cfg, model, args.distributed, logger)
+        _compress_once_at_end(cfg, cfg.OUTPUT_DIR, logger)
+        synchronize()
 
 
 

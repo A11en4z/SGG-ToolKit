@@ -2,6 +2,7 @@
 
 export CUDA_VISIBLE_DEVICES=1
 export NUM_GUP=1
+export SEED="${SEED:-1029}"
 
 MODEL_NAME='LHBB_RPCM_sgcls_test'
 
@@ -14,6 +15,7 @@ python3 \
   --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_base.yaml" \
   --mm_config "configs/RSHBB/STAR_hbb_predcls_sgcls.py" \
   --mm_weight "Pretrained_Obj/HBB_swin_L_OBD.pth" \
+  SEED $SEED \
   MODEL.ROI_RELATION_HEAD.USE_GT_BOX True \
   MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL False \
   MODEL.ROI_RELATION_HEAD.PREDICT_USE_BIAS False \
