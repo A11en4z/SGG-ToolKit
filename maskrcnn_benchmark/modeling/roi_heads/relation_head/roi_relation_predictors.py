@@ -667,6 +667,269 @@ class RPCM(nn.Module):
 
 
     
+class _BCKMV1SelfAttnBlock(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward, dropout):
+        """BCKM v1 的短序列 self-attention block（残差 + LN + FFN）。"""
+        super(_BCKMV1SelfAttnBlock, self).__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout_attn = nn.Dropout(dropout)
+        self.dropout_ffn = nn.Dropout(dropout)
+
+    def forward(self, x):
+        """前向传播：输入形状为 (L, N, D)，其中 N 为关系对总数。"""
+        if x.numel() == 0 or x.size(1) == 0:
+            return x
+        attn_out, _ = self.self_attn(x, x, x, need_weights=False)
+        x = self.norm1(x + self.dropout_attn(attn_out))
+        ffn_out = self.linear2(self.dropout_ffn(F.relu(self.linear1(x))))
+        x = self.norm2(x + self.dropout_ffn(ffn_out))
+        return x
+
+
+@registry.ROI_RELATION_PREDICTOR.register("BCKM")
+class BCKM(RPCM):
+    def __init__(self, config, in_channels):
+        """BCKM predictor：在 RPCM 基础上替换融合阶段，原型阶段复用。"""
+        super(BCKM, self).__init__(config, in_channels)
+        dropout_p = float(getattr(self.dropout_pred, "p", 0.2))
+        self.bckm_v1_union_linear = nn.Linear(self.mlp_dim, self.mlp_dim)
+        self.bckm_v1_union_norm = nn.LayerNorm(self.mlp_dim)
+        self.bckm_v1_union_dropout = nn.Dropout(dropout_p)
+        self.bckm_v1_blocks = nn.ModuleList(
+            [_BCKMV1SelfAttnBlock(self.mlp_dim, 8, 4096, dropout_p) for _ in range(2)]
+        )
+        self.bckm_v1_alpha_mlp = nn.Sequential(
+            nn.Linear(self.mlp_dim * 2, self.mlp_dim),
+            nn.ReLU(True),
+            nn.Dropout(dropout_p),
+            nn.Linear(self.mlp_dim, self.mlp_dim),
+        )
+        self.bckm_v1_rel_norm = nn.LayerNorm(self.mlp_dim)
+
+    def forward(self, proposals, rel_pair_idxs, rel_labels, rel_binarys, roi_features, union_features, logger=None):
+        entity_dists, entity_preds, rel_rep1, num_objs, num_rels, pair_pred, add_losses = self.forward_fusion_legacy(
+            proposals,
+            rel_pair_idxs,
+            rel_labels,
+            rel_binarys,
+            roi_features,
+            union_features,
+            logger=logger,
+        )
+        rel_dists, add_losses = self.forward_prototype_legacy(rel_rep1, rel_labels, num_rels, add_losses)
+        entity_dists = entity_dists.split(num_objs, dim=0)
+        rel_dists = rel_dists.split(num_rels, dim=0)
+        return entity_dists, rel_dists, add_losses
+
+    def forward_fusion_legacy(
+        self,
+        proposals,
+        rel_pair_idxs,
+        rel_labels,
+        rel_binarys,
+        roi_features,
+        union_features,
+        logger=None,
+    ):
+        add_losses = {}
+
+        augment_obj_feat, rel_feats = self.pairwise_feature_extractor(
+            roi_features,
+            union_features,
+            proposals,
+            rel_pair_idxs,
+        )
+
+        proposal_pairs = copy.deepcopy(rel_pair_idxs)
+        rel_inds, obj_obj_map, subj_pred_map, obj_pred_map, pred_pred_map = self._get_map_idxs(proposals, proposal_pairs)
+
+        x_obj = augment_obj_feat
+        x_pred = rel_feats
+        obj_feats = [x_obj]
+        pred_feats = [x_pred]
+
+        for t in range(self.feat_update_step):
+            source_obj = self.gcn_collect_feat(obj_feats[t], obj_feats[t], obj_obj_map, 4)
+
+            source_rel_sub = self.gcn_collect_feat(obj_feats[t], pred_feats[t], subj_pred_map, 0)
+            source_rel_obj = self.gcn_collect_feat(obj_feats[t], pred_feats[t], obj_pred_map, 1)
+            source2obj_all = (source_obj + source_rel_sub + source_rel_obj) / 3
+
+            obj_feats.append(self.gcn_update_feat(obj_feats[t], source2obj_all, 0))
+
+            source_sub_rel = self.gcn_collect_feat(pred_feats[t], obj_feats[t], subj_pred_map.t(), 2)
+            source_obj_rel = self.gcn_collect_feat(pred_feats[t], obj_feats[t], obj_pred_map.t(), 3)
+            source_rel_rel = self.gcn_collect_feat(pred_feats[t], pred_feats[t], pred_pred_map, 5)
+            source2rel_all = (source_sub_rel + source_obj_rel + source_rel_rel) / 3
+            pred_feats.append(self.gcn_update_feat(pred_feats[t], source2rel_all, 1))
+
+        roi_features = obj_feats[-1]
+        union_features = pred_feats[-1]
+
+        entity_dists, entity_preds, obj_labels = self.refine_obj_labels(roi_features, proposals)
+
+        entity_rep = self.post_emb(roi_features)
+        entity_rep = entity_rep.view(entity_rep.size(0), 2, self.mlp_dim)
+
+        sub_rep = entity_rep[:, 1].contiguous().view(-1, self.mlp_dim)
+        obj_rep = entity_rep[:, 0].contiguous().view(-1, self.mlp_dim)
+
+        entity_embeds = self.obj_embed(entity_preds)
+
+        num_rels = [r.shape[0] for r in rel_pair_idxs]
+        num_objs = [len(b) for b in proposals]
+        assert len(num_rels) == len(num_objs)
+
+        sub_reps = sub_rep.split(num_objs, dim=0)
+        obj_reps = obj_rep.split(num_objs, dim=0)
+        entity_preds_split = entity_preds.split(num_objs, dim=0)
+        entity_embeds_split = entity_embeds.split(num_objs, dim=0)
+
+        t_s_list = []
+        t_o_list = []
+        pair_preds = []
+
+        for pair_idx, sub_rep_i, obj_rep_i, entity_pred_i, entity_embed_i, proposal in zip(
+            rel_pair_idxs, sub_reps, obj_reps, entity_preds_split, entity_embeds_split, proposals
+        ):
+            s_embed = self.W_sub(entity_embed_i[pair_idx[:, 0]])
+            o_embed = self.W_obj(entity_embed_i[pair_idx[:, 1]])
+
+            sem_sub = self.vis2sem(sub_rep_i[pair_idx[:, 0]])
+            sem_obj = self.vis2sem(obj_rep_i[pair_idx[:, 1]])
+
+            gate_sem_sub = torch.sigmoid(self.gate_sub(cat((s_embed, sem_sub), dim=-1)))
+            gate_sem_obj = torch.sigmoid(self.gate_obj(cat((o_embed, sem_obj), dim=-1)))
+
+            sub = s_embed + sem_sub * gate_sem_sub
+            obj = o_embed + sem_obj * gate_sem_obj
+
+            sub = self.norm_sub(self.dropout_sub(torch.relu(self.linear_sub(sub))) + sub)
+            obj = self.norm_obj(self.dropout_obj(torch.relu(self.linear_obj(obj))) + obj)
+
+            t_s_list.append(sub)
+            t_o_list.append(obj)
+            pair_preds.append(torch.stack((entity_pred_i[pair_idx[:, 0]], entity_pred_i[pair_idx[:, 1]]), dim=1))
+
+        t_s0 = cat(t_s_list, dim=0)
+        t_o0 = cat(t_o_list, dim=0)
+        pair_pred = cat(pair_preds, dim=0)
+
+        sem_pred = self.vis2sem(self.down_samp(union_features))
+        fusion_type = getattr(getattr(self.cfg.MODEL.ROI_RELATION_HEAD, "BCKM", None), "FUSION_TYPE", "legacy")
+        if fusion_type == "v1":
+            t_u0 = self.bckm_v1_union_norm(
+                self.bckm_v1_union_dropout(F.relu(self.bckm_v1_union_linear(sem_pred))) + sem_pred
+            )
+            tokens = torch.stack((t_s0, t_o0, t_u0), dim=0)
+            for blk in self.bckm_v1_blocks:
+                tokens = blk(tokens)
+            if tokens.numel() == 0 or tokens.size(1) == 0:
+                rel_rep1 = t_s0
+            else:
+                t_s1, t_o1, t_u1 = tokens[0], tokens[1], tokens[2]
+                fusion_so = fusion_func(t_s1, t_o1)
+                alpha = torch.tanh(self.bckm_v1_alpha_mlp(cat((fusion_so, t_u1), dim=-1)))
+                rel_rep1 = self.bckm_v1_rel_norm(fusion_so + alpha * t_u1)
+        else:
+            fusion_so = fusion_func(t_s0, t_o0)
+            gate_sem_pred = torch.sigmoid(self.gate_pred(cat((fusion_so, sem_pred), dim=-1)))
+            rel_rep1 = fusion_so - sem_pred * gate_sem_pred
+
+        return entity_dists, entity_preds, rel_rep1, num_objs, num_rels, pair_pred, add_losses
+
+    def forward_prototype_legacy(self, rel_rep1, rel_labels, num_rels, add_losses):
+        predicate_proto = self.W_pred(self.rel_embed.weight)
+
+        predicate_proto1 = predicate_proto
+        predicate_proto_np = predicate_proto.detach().cpu().numpy()
+        background_class = predicate_proto_np[0]
+        other_classes = predicate_proto_np[1:]
+
+        effective_par = min(int(self.Par), int(predicate_proto_np.shape[0]))
+        if other_classes.shape[0] == 0:
+            new_predicates = background_class[None, :]
+        else:
+            n_clusters = min(max(1, effective_par - 1), int(other_classes.shape[0]))
+            if n_clusters >= other_classes.shape[0]:
+                centers = other_classes
+            else:
+                kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(other_classes)
+                centers = kmeans.cluster_centers_
+            new_predicates = np.vstack((background_class, centers))
+
+        predicate_proto2 = torch.as_tensor(
+            new_predicates, dtype=predicate_proto.dtype, device=predicate_proto.device
+        )
+        rel_rep1 = self.norm_rel_rep(self.dropout_rel_rep(torch.relu(self.linear_rel_rep(rel_rep1))) + rel_rep1)
+        rel_rep1 = self.project_head(self.dropout_rel(torch.relu(rel_rep1)))
+
+        predicate_proto1 = self.project_head(self.dropout_pred(torch.relu(predicate_proto1)))
+        predicate_proto2 = self.project_head(self.dropout_pred(torch.relu(predicate_proto2)))
+
+        rel_rep_norm1 = rel_rep1 / rel_rep1.norm(dim=1, keepdim=True)
+        predicate_proto_norm1 = predicate_proto1 / predicate_proto1.norm(dim=1, keepdim=True)
+        predicate_proto_norm2 = predicate_proto2 / predicate_proto2.norm(dim=1, keepdim=True)
+        rel_dists = rel_rep_norm1 @ predicate_proto_norm1.t() * self.logit_scale.exp()
+
+        if self.training:
+            target_rpredicate_proto_norm1 = predicate_proto_norm1.clone().detach()
+            target_rpredicate_proto_norm2 = predicate_proto_norm2.clone().detach()
+
+            simil_mat1 = predicate_proto_norm1 @ target_rpredicate_proto_norm1.t()
+            simil_mat2 = predicate_proto_norm2 @ target_rpredicate_proto_norm2.t()
+
+            num_rel = int(predicate_proto_norm1.size(0))
+            num_par = int(predicate_proto_norm2.size(0))
+
+            l21_1 = torch.norm(torch.norm(simil_mat1, p=2, dim=1), p=1) / (num_rel * num_rel)
+            l21_2 = torch.norm(torch.norm(simil_mat2, p=2, dim=1), p=1) / (num_par * num_par)
+
+            add_losses.update({"l21_1_loss": l21_1})
+            add_losses.update({"l21_2_loss": l21_2})
+
+            gamma2 = 7.0
+            predicate_proto_a1 = predicate_proto1.unsqueeze(dim=1).expand(-1, num_rel, -1)
+            predicate_proto_b1 = predicate_proto1.detach().unsqueeze(dim=0).expand(num_rel, -1, -1)
+            predicate_proto_a2 = predicate_proto2.unsqueeze(dim=1).expand(-1, num_par, -1)
+            predicate_proto_b2 = predicate_proto2.detach().unsqueeze(dim=0).expand(num_par, -1, -1)
+            proto_dis_mat1 = (predicate_proto_a1 - predicate_proto_b1).norm(dim=2) ** 2
+            proto_dis_mat2 = (predicate_proto_a2 - predicate_proto_b2).norm(dim=2) ** 2
+
+            sorted_proto_dis_mat1, _ = torch.sort(proto_dis_mat1, dim=1)
+            sorted_proto_dis_mat2, _ = torch.sort(proto_dis_mat2, dim=1)
+            topK_proto_dis1 = sorted_proto_dis_mat1[:, :2].sum(dim=1) / 1
+            topK_proto_dis2 = sorted_proto_dis_mat2[:, :2].sum(dim=1) / 1
+            dist_loss_1 = torch.max(torch.zeros(num_rel, device=rel_rep1.device), -topK_proto_dis1 + gamma2).mean()
+            dist_loss_2 = torch.max(torch.zeros(num_par, device=rel_rep1.device), -topK_proto_dis2 + gamma2).mean()
+            add_losses.update({"dist_loss2_1": dist_loss_1})
+            add_losses.update({"dist_loss2_2": dist_loss_2})
+
+            rel_labels_cat = cat(rel_labels, dim=0)
+            gamma1 = 1.0
+            rel_rep_expand = rel_rep1.unsqueeze(dim=1).expand(-1, num_rel, -1)
+            predicate_proto_expand = predicate_proto1.unsqueeze(dim=0).expand(rel_labels_cat.size(0), -1, -1)
+            distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2
+            mask_neg = torch.ones(rel_labels_cat.size(0), num_rel, device=rel_rep1.device)
+            mask_neg[torch.arange(rel_labels_cat.size(0)), rel_labels_cat] = 0
+            distance_set_neg = distance_set * mask_neg
+            distance_set_pos = distance_set[torch.arange(rel_labels_cat.size(0)), rel_labels_cat]
+            sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
+            k = min(11, num_rel)
+            denom = max(1, k - 1)
+            topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :k].sum(dim=1) / denom
+            loss_sum = torch.max(
+                torch.zeros(rel_labels_cat.size(0), device=rel_rep1.device),
+                distance_set_pos - topK_sorted_distance_set_neg + gamma1,
+            ).mean()
+            add_losses.update({"loss_dis": loss_sum})
+
+        return rel_dists, add_losses
+
 class MLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
         super().__init__()

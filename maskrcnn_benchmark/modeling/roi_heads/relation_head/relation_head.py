@@ -215,8 +215,17 @@ class ROIRelationHead(torch.nn.Module):
             
             
             if self.Sema_F :
-                sema_tmp = self.semafilter.sx(rel_pair_idxs=rel_pair_idxs[0], obj=proposals[0].extra_fields["labels"])
-                rel_pair_idxs = sema_tmp
+                for i, proposal in enumerate(proposals):
+                    if len(proposal) > 0:
+                        sema_tmp = self.semafilter.sx(
+                            rel_pair_idxs=rel_pair_idxs[i],
+                            obj=proposal.extra_fields["labels"],
+                        )
+                        rel_pair_idxs[i] = sema_tmp[0]
+                    else:
+                        rel_pair_idxs[i] = torch.zeros(
+                            (0, 2), dtype=torch.int64, device=features[0].device
+                        )
 
             
             if len(rel_pair_idxs[0]) > 10000 :
@@ -225,7 +234,7 @@ class ROIRelationHead(torch.nn.Module):
                     if not self.training:
                         print("random_filter")
                         id_num = torch.randperm(rel_pair_idxs[0].size(0))
-                        rel_pair_idxs = [rel_pair_idxs[0][id_num[:10000]]]
+                        rel_pair_idxs[0] = rel_pair_idxs[0][id_num[:10000]]
 
                 elif self.filter_method == "PPG":
 
@@ -238,10 +247,14 @@ class ROIRelationHead(torch.nn.Module):
                                 except Exception:
                                     self.PPG = None
                             if self.PPG is not None:
-                                rel_pair_idxs = self.PPG.sx_Oriented(rel_pair_idxs[0], proposals)
+                                rel_pair_idxs_tmp = self.PPG.sx_Oriented(rel_pair_idxs[0], proposals)
+                                if len(rel_pair_idxs_tmp) == len(rel_pair_idxs):
+                                    rel_pair_idxs = rel_pair_idxs_tmp
+                                else:
+                                    rel_pair_idxs[0] = rel_pair_idxs_tmp[0]
                             else:
                                 id_num = torch.randperm(rel_pair_idxs[0].size(0))
-                                rel_pair_idxs = [rel_pair_idxs[0][id_num[:10000]]]
+                                rel_pair_idxs[0] = rel_pair_idxs[0][id_num[:10000]]
                         else:
                             if self.PPG_HBB is None:
                                 try:
@@ -249,12 +262,21 @@ class ROIRelationHead(torch.nn.Module):
                                 except Exception:
                                     self.PPG_HBB = None
                             if self.PPG_HBB is not None:
-                                rel_pair_idxs = self.PPG_HBB.sx_HBB(rel_pair_idxs[0], proposals)
+                                rel_pair_idxs_tmp = self.PPG_HBB.sx_HBB(rel_pair_idxs[0], proposals)
+                                if len(rel_pair_idxs_tmp) == len(rel_pair_idxs):
+                                    rel_pair_idxs = rel_pair_idxs_tmp
+                                else:
+                                    rel_pair_idxs[0] = rel_pair_idxs_tmp[0]
                             else:
                                 id_num = torch.randperm(rel_pair_idxs[0].size(0))
-                                rel_pair_idxs = [rel_pair_idxs[0][id_num[:10000]]]
+                                rel_pair_idxs[0] = rel_pair_idxs[0][id_num[:10000]]
                         print('num_PPG_after:',len(rel_pair_idxs[0]))
 
+            for i, proposal in enumerate(proposals):
+                if len(proposal) == 0:
+                    rel_pair_idxs[i] = torch.zeros((0, 2), dtype=torch.int64, device=features[0].device)
+                elif rel_pair_idxs[i].numel() == 0:
+                    rel_pair_idxs[i] = torch.zeros((1, 2), dtype=torch.int64, device=features[0].device)
         
 
     

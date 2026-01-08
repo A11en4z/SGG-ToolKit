@@ -17,11 +17,11 @@ ENV_PREFIX="$("${PYTHON_CMD[@]}" -c "import sys; print(sys.prefix)")"
 TORCH_LIB_DIR="$("${PYTHON_CMD[@]}" -c "import os,torch; print(os.path.join(os.path.dirname(torch.__file__), \"lib\"))")"
 export LD_LIBRARY_PATH="${ENV_PREFIX}/lib:${TORCH_LIB_DIR}:${LD_LIBRARY_PATH}"
 
-PRETRAIN_WEIGHTS="/gz-data/mmrotate/work_dirs/oriented_rcnn_swin-l_fpn_1x_star_le90/best_mAP_epoch_21.pth"
+WEIGHTS="/gz-data/SGG-ToolKit/Checkpoints/DIOR_BCKM_predcls_train/best_epoch.pth"
 MMCONFIG="configs/RSOBB/DIOR_obb_predcls_sgcls_swinl_800.py"
 
-if [ ! -f "$PRETRAIN_WEIGHTS" ]; then
-  echo "Error: mmrotate checkpoint not found: $PRETRAIN_WEIGHTS"
+if [ ! -f "$WEIGHTS" ]; then
+  echo "Error: trained checkpoint not found: $WEIGHTS"
   exit 1
 fi
 
@@ -31,9 +31,9 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
-export SEED="${SEED:-114514}"
+export SEED="${SEED:-1029}"
 
-MODEL_NAME='DIOR_RPCM_predcls_train'
+MODEL_NAME='DIOR_BCKM_predcls_test'
 path="./Checkpoints/${MODEL_NAME}/"
 mkdir -p "$path"
 
@@ -41,36 +41,23 @@ mkdir -p "$path"
   tools/relation_train_net.py \
   --config-file "configs/e2e_relation_X_101_32_8_FPN_1x_trans_custom_rpcm.yaml" \
   --mm_config "$MMCONFIG" \
-  --mm_weight "$PRETRAIN_WEIGHTS" \
+  --mm_weight "$WEIGHTS" \
   SEED $SEED \
-  DATASETS.TRAIN "('DIOR_with_attribute_train',)" \
-  DATASETS.VAL "('DIOR_with_attribute_val',)" \
   DATASETS.TEST "('DIOR_with_attribute_test',)" \
   MODEL.ROI_RELATION_HEAD.USE_GT_BOX True \
   MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL True \
   MODEL.ROI_RELATION_HEAD.PREDICT_USE_BIAS False \
-  MODEL.ROI_RELATION_HEAD.PREDICTOR RPCM \
-  MODEL.ROI_BOX_HEAD.NUM_CLASSES 21 \
-  MODEL.ROI_RELATION_HEAD.NUM_CLASSES 23 \
-  MODEL.ROI_ATTRIBUTE_HEAD.NUM_ATTRIBUTES 2 \
-  SOLVER.WARMUP_ITERS 500 \
+  MODEL.ROI_RELATION_HEAD.PREDICTOR BCKM \
   DTYPE "float32" \
   GLOVE_DIR glove \
   SOLVER.IMS_PER_BATCH 16 TEST.IMS_PER_BATCH $NUM_GUP \
-  SOLVER.MAX_ITER 10000 SOLVER.BASE_LR 1e-3 \
-  SOLVER.SCHEDULE.TYPE WarmupMultiStepLR \
-  MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
-  SOLVER.STEPS "(6000, 8500)" SOLVER.VAL_PERIOD 1000 \
-  SOLVER.CHECKPOINT_PERIOD 1000 \
-  val_outpath "$path/inference/val" \
-  test_outpath "$path/inference/test" \
   OUTPUT_DIR "$path" \
-  SOLVER.PRE_VAL False \
-  SOLVER.GRAD_NORM_CLIP 5.0 \
-  AUTO_LONGTAIL_IDS True \
   Type "Large_RS_OBB" \
   filter_method "PPG" \
   INFERENCE.COMPRESS_OUTPUT True \
   INFERENCE.COMPRESS_LEVEL 1 \
   INFERENCE.COMPRESS_MIN_SIZE_MB 100 \
+  Only_test True \
+  test_outpath "$path" \
   2>&1 | tee -a "${path}/console.log"
+
