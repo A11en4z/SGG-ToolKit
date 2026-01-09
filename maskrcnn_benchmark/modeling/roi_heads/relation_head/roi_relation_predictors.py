@@ -669,7 +669,17 @@ class RPCM(nn.Module):
     
 class _BCKMV1SelfAttnBlock(nn.Module):
     def __init__(self, d_model, nhead, dim_feedforward, dropout):
-        """BCKM v1 的短序列 self-attention block（残差 + LN + FFN）。"""
+        """BCKM v1 短序列 Transformer Block。
+
+        输入 token 序列长度 L 很短（通常为 3：tS/tO/tU），因此使用全连接 self-attn。
+        结构：MHA + 残差 + LN + FFN + 残差 + LN。
+
+        Args:
+            d_model: token 维度（与 mlp_dim 一致）。
+            nhead: multi-head attention 头数。
+            dim_feedforward: FFN 隐层维度。
+            dropout: dropout 概率。
+        """
         super(_BCKMV1SelfAttnBlock, self).__init__()
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
@@ -680,7 +690,17 @@ class _BCKMV1SelfAttnBlock(nn.Module):
         self.dropout_ffn = nn.Dropout(dropout)
 
     def forward(self, x):
-        """前向传播：输入形状为 (L, N, D)，其中 N 为关系对总数。"""
+        """前向传播。
+
+        Args:
+            x: (L, N, D)，L 为 token 数，N 为关系对总数，D 为特征维度。
+
+        Returns:
+            与输入同形状的 token 序列。
+
+        说明：当某个 batch 内没有任何关系对时，N 可能为 0。
+        此时 MultiheadAttention 会在 view/reshape 阶段报错，所以这里直接早退。
+        """
         if x.numel() == 0 or x.size(1) == 0:
             return x
         attn_out, _ = self.self_attn(x, x, x, need_weights=False)
@@ -693,15 +713,31 @@ class _BCKMV1SelfAttnBlock(nn.Module):
 @registry.ROI_RELATION_PREDICTOR.register("BCKM")
 class BCKM(RPCM):
     def __init__(self, config, in_channels):
-        """BCKM predictor：在 RPCM 基础上替换融合阶段，原型阶段复用。"""
+        """BCKM predictor。
+
+        基于 RPCM 复用：
+        - 图消息传递 / GCN 更新（obj_feats/pred_feats）
+        - tS/tO 的 token 初始化（由类别词向量 + 视觉语义门控得到）
+        - prototype 学习与度量分类（forward_prototype_legacy）
+
+        主要改动点：
+        - 融合阶段新增 v1：tS/tO/tU token + 短序列 Transformer（无 mask）
+        - 输出使用“有符号门控反证据 + LN”：rel = LN(fusion_so + alpha ⊙ tU)
+        """
         super(BCKM, self).__init__(config, in_channels)
         dropout_p = float(getattr(self.dropout_pred, "p", 0.2))
+
+        # tU（union / anti-evidence token）侧的投影与归一化
         self.bckm_v1_union_linear = nn.Linear(self.mlp_dim, self.mlp_dim)
         self.bckm_v1_union_norm = nn.LayerNorm(self.mlp_dim)
         self.bckm_v1_union_dropout = nn.Dropout(dropout_p)
+
+        # 短序列 Transformer（L=3 的 tokens：tS/tO/tU）
         self.bckm_v1_blocks = nn.ModuleList(
             [_BCKMV1SelfAttnBlock(self.mlp_dim, 8, 4096, dropout_p) for _ in range(2)]
         )
+
+        # alpha 预测：根据 (fusion_so, tU) 生成每维的有符号门控系数（tanh 限幅到 [-1,1]）
         self.bckm_v1_alpha_mlp = nn.Sequential(
             nn.Linear(self.mlp_dim * 2, self.mlp_dim),
             nn.ReLU(True),
@@ -711,6 +747,7 @@ class BCKM(RPCM):
         self.bckm_v1_rel_norm = nn.LayerNorm(self.mlp_dim)
 
     def forward(self, proposals, rel_pair_idxs, rel_labels, rel_binarys, roi_features, union_features, logger=None):
+        """BCKM 整体前向：融合阶段（可选 v1）+ 原型阶段（复用 RPCM）。"""
         entity_dists, entity_preds, rel_rep1, num_objs, num_rels, pair_pred, add_losses = self.forward_fusion_legacy(
             proposals,
             rel_pair_idxs,
@@ -735,6 +772,16 @@ class BCKM(RPCM):
         union_features,
         logger=None,
     ):
+        """融合阶段前向（BCKM 的主要改动点）。
+
+        流程：
+        1) 复用 RPCM 的 GCN 更新得到 roi_features/union_features
+        2) 复用 RPCM 的 token 初始化得到 tS/tO
+        3) v1：构造 tU 并与 tS/tO 组成 3-token 序列，经短 Transformer 交互
+        4) 输出 rel_rep1：有符号门控反证据 + LN
+
+        兼容性：当没有任何关系对时，必须返回空的 rel_rep1，避免后续注意力/拼接崩溃。
+        """
         add_losses = {}
 
         augment_obj_feat, rel_feats = self.pairwise_feature_extractor(
@@ -819,23 +866,38 @@ class BCKM(RPCM):
         t_o0 = cat(t_o_list, dim=0)
         pair_pred = cat(pair_preds, dim=0)
 
+        # tU 的语义来源：对 union_features 下采样后做 vis2sem 得到 sem_pred（即 h(xu)）
         sem_pred = self.vis2sem(self.down_samp(union_features))
+
+        # 通过 cfg 控制融合策略：默认 legacy（保持与 RPCM 一致），v1 为新融合（无 mask + 有符号门控反证据）
         fusion_type = getattr(getattr(self.cfg.MODEL.ROI_RELATION_HEAD, "BCKM", None), "FUSION_TYPE", "legacy")
         if fusion_type == "v1":
+            # Step A: 构造 tU token（对 sem_pred 做一层投影 + 残差 + LN），作为“反证据/union”提示
             t_u0 = self.bckm_v1_union_norm(
                 self.bckm_v1_union_dropout(F.relu(self.bckm_v1_union_linear(sem_pred))) + sem_pred
             )
+
+            # Step B: token 序列 [tS, tO, tU]，长度 L=3；N 为关系对总数
             tokens = torch.stack((t_s0, t_o0, t_u0), dim=0)
+
+            # Step C: 短序列 Transformer 交互（全连接 self-attn，不使用 mask）
             for blk in self.bckm_v1_blocks:
                 tokens = blk(tokens)
+
+            # Step D: 零关系对兜底（N=0 时 tokens 为 (L,0,D)），直接返回空张量以保证后续 split 逻辑正常
             if tokens.numel() == 0 or tokens.size(1) == 0:
                 rel_rep1 = t_s0
             else:
+                # Step E: 从交互后的 tokens 取出 tS/tO/tU，计算 fusion_so
                 t_s1, t_o1, t_u1 = tokens[0], tokens[1], tokens[2]
                 fusion_so = fusion_func(t_s1, t_o1)
+
+                # Step F: 有符号门控反证据
+                # alpha = tanh(MLP([fusion_so, tU]))，逐维取值范围 [-1,1]
                 alpha = torch.tanh(self.bckm_v1_alpha_mlp(cat((fusion_so, t_u1), dim=-1)))
                 rel_rep1 = self.bckm_v1_rel_norm(fusion_so + alpha * t_u1)
         else:
+            # legacy：保持 RPCM 的反证据形式（固定为减法 + sigmoid gate）
             fusion_so = fusion_func(t_s0, t_o0)
             gate_sem_pred = torch.sigmoid(self.gate_pred(cat((fusion_so, sem_pred), dim=-1)))
             rel_rep1 = fusion_so - sem_pred * gate_sem_pred
@@ -843,6 +905,7 @@ class BCKM(RPCM):
         return entity_dists, entity_preds, rel_rep1, num_objs, num_rels, pair_pred, add_losses
 
     def forward_prototype_legacy(self, rel_rep1, rel_labels, num_rels, add_losses):
+        """原型阶段前向（复用 RPCM，不在 BCKM 里改动训练目标）。"""
         predicate_proto = self.W_pred(self.rel_embed.weight)
 
         predicate_proto1 = predicate_proto

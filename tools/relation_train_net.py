@@ -74,6 +74,10 @@ try:
 except ImportError:
     raise ImportError('Use APEX for multi-precision via apex.amp')
 from numpy import random
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except Exception:
+    SummaryWriter = None
 def seed_torch(seed: int, deterministic: bool = True):
     """设置 Python/NumPy/Torch 随机种子，并可选启用确定性 cuDNN。"""
     os.environ["PYTHONHASHSEED"] = str(int(seed))
@@ -1017,6 +1021,20 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         _compress_folder_once_at_end(cfg, output_folder, logger)
         sys.exit() 
 
+    tb_writer = None
+    tb_log_dir = None
+    if get_rank() == 0 and SummaryWriter is not None and cfg.OUTPUT_DIR:
+        tb_log_dir = os.path.join(cfg.OUTPUT_DIR, "tb")
+        mkdir(tb_log_dir)
+        try:
+            tb_writer = SummaryWriter(log_dir=tb_log_dir)
+            logger.info("TensorBoard logdir: {}".format(tb_log_dir))
+        except Exception as e:
+            tb_writer = None
+            logger.info("TensorBoard init failed: {}".format(e))
+    elif get_rank() == 0 and cfg.OUTPUT_DIR and SummaryWriter is None:
+        logger.info("TensorBoard is unavailable in this environment.")
+
 
 
     for iteration, (images, targets, _ , imgs, tar1) in enumerate(train_data_loader, start_iter):  
@@ -1046,6 +1064,19 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         loss_dict_reduced = reduce_loss_dict(loss_dict)
         losses_reduced = sum(loss for loss in loss_dict_reduced.values())
         meters.update(loss=losses_reduced, **loss_dict_reduced)
+        if tb_writer is not None and (iteration == 1 or iteration % cfg.Print_iter == 0 or iteration == max_iter):
+            tb_writer.add_scalar("train/lr", float(optimizer.param_groups[-1]["lr"]), iteration)
+            tb_writer.add_scalar(
+                "train/memory_mb",
+                float(torch.cuda.max_memory_allocated() / 1024.0 / 1024.0),
+                iteration,
+            )
+            tb_writer.add_scalar("train/loss", float(losses_reduced), iteration)
+            for k, v in loss_dict_reduced.items():
+                try:
+                    tb_writer.add_scalar("train/{}".format(k), float(v), iteration)
+                except Exception:
+                    pass
         
         optimizer.zero_grad()
         with amp.scale_loss(losses, optimizer) as scaled_losses:
@@ -1138,10 +1169,30 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
                     logger.info(
                         "[val][{}][{}] F1(avg)={:.4f} {}".format(mode, dataset_name, f1_avg, " ".join(parts))
                     )
+                    if tb_writer is not None:
+                        tb_writer.add_scalar(
+                            "val/{}/{}/F1_avg".format(mode, dataset_name),
+                            float(f1_avg),
+                            iteration,
+                        )
+                        for k in f1_target_ks:
+                            v = per_k.get(int(k))
+                            if not v:
+                                continue
+                            try:
+                                tb_writer.add_scalar(
+                                    "val/{}/{}/F1@{}".format(mode, dataset_name, int(k)),
+                                    float(v["F1"]),
+                                    iteration,
+                                )
+                            except Exception:
+                                pass
 
                 if len(f1_values) > 0:
                     f1_avg_all = float(sum(f1_values) / len(f1_values))
                     logger.info("[val][{}] F1(avg) over {} = {:.4f}".format(mode, dataset_names, f1_avg_all))
+                    if tb_writer is not None:
+                        tb_writer.add_scalar("val/{}/F1_avg_all".format(mode), float(f1_avg_all), iteration)
                     if f1_avg_all > best_f1_avg:
                         best_f1_avg = f1_avg_all
                         best_f1_iter = iteration
@@ -1191,6 +1242,12 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
             total_time_str, total_training_time / (max_iter)
         )
     )
+    if tb_writer is not None:
+        try:
+            tb_writer.flush()
+            tb_writer.close()
+        except Exception:
+            pass
     return model
  
         
