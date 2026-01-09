@@ -235,6 +235,27 @@ def _cleanup_detectron_checkpoints(output_dir: str, keep_last: int, keep_model_f
             pass
 
 
+def _resolve_max_iter(cfg, train_data_loader) -> int:
+    """根据 cfg.SOLVER.MAX_ITER 与 dataloader 长度，解析本次训练最大迭代数。"""
+    data_len = None
+    try:
+        data_len = int(len(train_data_loader))
+    except Exception:
+        data_len = None
+
+    max_iter_cfg = 0
+    try:
+        max_iter_cfg = int(getattr(getattr(cfg, "SOLVER", None), "MAX_ITER", 0) or 0)
+    except Exception:
+        max_iter_cfg = 0
+
+    if max_iter_cfg <= 0:
+        return data_len if data_len is not None else 0
+    if data_len is None:
+        return max_iter_cfg
+    return min(max_iter_cfg, data_len)
+
+
 def _find_best_epoch_checkpoint(output_dir: str) -> str:
     """在 output_dir 下查找 best_epoch checkpoint，优先 best_epoch.pth，其次 best_epoch_*.pth（取编号最大）。"""
     if not output_dir or not os.path.isdir(output_dir):
@@ -796,7 +817,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         
         logger.info("Start training")
         meters = MetricLogger(delimiter="  ")
-        max_iter = len(train_data_loader)
+        max_iter = _resolve_max_iter(cfg, train_data_loader)
         start_iter = arguments["iteration"]
         start_training_time = time.time()
         end = time.time()
@@ -878,7 +899,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         logger.info("***********************Step 3: Start training ***********************")
      
         meters = MetricLogger(delimiter="  ")
-        max_iter = len(train_data_loader)
+        max_iter = _resolve_max_iter(cfg, train_data_loader)
 
         start_iter = arguments["iteration"]
         cfg.SOLVER.START_ITER = arguments["iteration"]
@@ -969,7 +990,7 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         logger.info("***********************Step 3: Start training ***********************")
      
         meters = MetricLogger(delimiter="  ")
-        max_iter = len(train_data_loader)
+        max_iter = _resolve_max_iter(cfg, train_data_loader)
 
         start_iter = arguments["iteration"]
         cfg.SOLVER.START_ITER = arguments["iteration"]

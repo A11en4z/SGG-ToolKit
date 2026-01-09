@@ -1,5 +1,5 @@
-dataset_type = 'DOTADataset'
-data_root = '/gz-data/DIOR_STAR/DIOR_STAR/'
+dataset_type = 'STARDataset'
+data_root = '/gz-data/DIOR_STAR/'
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
@@ -40,27 +40,27 @@ test_pipeline = [
         ])
 ]
 data = dict(
-    samples_per_gpu=1,
-    workers_per_gpu=1,
+    samples_per_gpu=2,
+    workers_per_gpu=2,
     train=dict(
-        type='DOTADataset',
-        ann_file=data_root + 'train/labelTxt/',
+        type=dataset_type,
+        ann_file='/gz-data/DIOR_STAR/DIOR_STAR/train/labelTxt/',
         img_prefix='/gz-data/DIOR_STAR/images/',
         pipeline=train_pipeline,
         version='le90'),
     val=dict(
-        type='DOTADataset',
-        ann_file=data_root + 'val/labelTxt/',
+        type=dataset_type,
+        ann_file='/gz-data/DIOR_STAR/DIOR_STAR/val/labelTxt/',
         img_prefix='/gz-data/DIOR_STAR/images/',
         pipeline=test_pipeline,
         version='le90'),
     test=dict(
-        type='DOTADataset',
-        ann_file=data_root + 'test/labelTxt/',
+        type=dataset_type,
+        ann_file='/gz-data/DIOR_STAR/DIOR_STAR/test/labelTxt/',
         img_prefix='/gz-data/DIOR_STAR/images/',
         pipeline=test_pipeline,
         version='le90'))
-evaluation = dict(interval=1, metric='mAP')
+evaluation = dict(interval=1, save_best='mAP', metric='mAP', rule='greater')
 optimizer = dict(
     type='AdamW',
     lr=0.0001,
@@ -77,10 +77,10 @@ lr_config = dict(
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=0.3333333333333333,
-    step=[8, 11])
-runner = dict(type='EpochBasedRunner', max_epochs=100)
-checkpoint_config = dict(interval=1)
-log_config = dict(interval=50, hooks=[dict(type='TextLoggerHook')])
+    step=[16, 22])
+runner = dict(type='EpochBasedRunner', max_epochs=24)
+checkpoint_config = dict(interval=1, max_keep_ckpts=3)
+log_config = dict(interval=100, hooks=[dict(type='TextLoggerHook')])
 dist_params = dict(backend='nccl')
 log_level = 'INFO'
 load_from = None
@@ -149,9 +149,9 @@ model = dict(
         bbox_head=dict(
             type='RotatedShared2FCBBoxHead',
             in_channels=256,
-            fc_out_channels=4096,
+            fc_out_channels=1024,
             roi_feat_size=7,
-            num_classes=48,
+            num_classes=20,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
                 angle_range='le90',
@@ -216,4 +216,3 @@ model = dict(
             score_thr=0.05,
             nms=dict(iou_thr=0.1),
             max_per_img=2000)))
-

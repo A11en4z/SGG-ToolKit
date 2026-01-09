@@ -23,7 +23,11 @@ class OrientedRCNN(RotatedTwoStageDetector):
                  test_cfg,
                  neck=None,
                  pretrained=None,
-                 init_cfg=None):
+                 init_cfg=None,
+                 ori_cfg=None,
+                 **kwargs):
+        """构建 mmrotate detector，并兼容 SGG 侧注入的 ori_cfg。"""
+        self.ori_cfg = ori_cfg
         super(OrientedRCNN, self).__init__(
             backbone=backbone,
             neck=neck,
@@ -51,6 +55,33 @@ class OrientedRCNN(RotatedTwoStageDetector):
         roi_outs = self.roi_head.forward_dummy(x, proposals)
         outs = outs + (roi_outs, )
         return outs
+
+
+@ROTATED_DETECTORS.register_module()
+class OrientedRCNNCrop(OrientedRCNN):
+    def __init__(self,
+                 backbone,
+                 rpn_head,
+                 roi_head,
+                 train_cfg,
+                 test_cfg,
+                 neck=None,
+                 pretrained=None,
+                 init_cfg=None,
+                 ori_cfg=None,
+                 **kwargs):
+        """OrientedRCNNCrop 兼容构建参数 ori_cfg（SGG 注入）。"""
+        super(OrientedRCNNCrop, self).__init__(
+            backbone=backbone,
+            neck=neck,
+            rpn_head=rpn_head,
+            roi_head=roi_head,
+            train_cfg=train_cfg,
+            test_cfg=test_cfg,
+            pretrained=pretrained,
+            init_cfg=init_cfg,
+            ori_cfg=ori_cfg,
+            **kwargs)
 
 
 # @ROTATED_DETECTORS.register_module()

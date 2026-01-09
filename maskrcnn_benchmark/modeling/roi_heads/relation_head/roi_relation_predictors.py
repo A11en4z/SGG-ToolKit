@@ -210,12 +210,12 @@ class RPCM(nn.Module):
         self.pooling_dim = config.MODEL.ROI_RELATION_HEAD.CONTEXT_POOLING_DIM
 
         self.mlp_dim = 2048 # config.MODEL.ROI_RELATION_HEAD.PENET_MLP_DIM
-        self.post_emb = nn.Linear(self.obj_dim, self.mlp_dim * 2)  
+        self.post_emb = nn.Linear(self.pooling_dim, self.mlp_dim * 2)  
 
         self.embed_dim = 300 # config.MODEL.ROI_RELATION_HEAD.PENET_EMBED_DIM
         dropout_p = 0.2 # config.MODEL.ROI_RELATION_HEAD.PENET_DROPOUT
         
-        self.pairwise_feature_extractor = PairwiseFeatureExtractor(cfg, in_channels)
+        self.pairwise_feature_extractor = PairwiseFeatureExtractor(config, in_channels)
         obj_embed_vecs = obj_edge_vectors(obj_classes, wv_dir=self.cfg.GLOVE_DIR, wv_dim=self.embed_dim)  # load Glove for objects
         rel_embed_vecs = rel_vectors(rel_classes, wv_dir=config.GLOVE_DIR, wv_dim=self.embed_dim)   # load Glove for predicates
         self.obj_embed = nn.Embedding(self.num_obj_cls, self.embed_dim)
@@ -279,7 +279,7 @@ class RPCM(nn.Module):
 
         self.obj_dim = in_channels
         self.out_obj = make_fc(self.hidden_dim, self.num_obj_classes) 
-        self.lin_obj_cyx = make_fc(self.obj_dim + self.embed_dim + 128, self.hidden_dim)
+        self.lin_obj_cyx = make_fc(self.pooling_dim + self.embed_dim + 128, self.hidden_dim)
 
         if self.cfg.MODEL.ROI_RELATION_HEAD.USE_GT_BOX:
             if self.cfg.MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL:
@@ -1509,9 +1509,9 @@ class TransformerPredictor(nn.Module):
         layer_init(self.ctx_compress, xavier=True)
         layer_init(self.post_cat, xavier=True)
 
-        if self.pooling_dim != config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM:
+        if self.pooling_dim != in_channels:
             self.union_single_not_match = True
-            self.up_dim = nn.Linear(config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM, self.pooling_dim)
+            self.up_dim = nn.Linear(in_channels, self.pooling_dim)
             layer_init(self.up_dim, xavier=True)
         else:
             self.union_single_not_match = False
@@ -1606,9 +1606,9 @@ class IMPPredictor(nn.Module):
         self.hidden_dim = config.MODEL.ROI_RELATION_HEAD.CONTEXT_HIDDEN_DIM
         self.pooling_dim = config.MODEL.ROI_RELATION_HEAD.CONTEXT_POOLING_DIM
 
-        if self.pooling_dim != config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM:
+        if self.pooling_dim != in_channels:
             self.union_single_not_match = True
-            self.up_dim = nn.Linear(config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM, self.pooling_dim)
+            self.up_dim = nn.Linear(in_channels, self.pooling_dim)
             layer_init(self.up_dim, xavier=True)
         else:
             self.union_single_not_match = False
@@ -1702,9 +1702,9 @@ class MotifPredictor(nn.Module):
         layer_init(self.post_cat, xavier=True)
         layer_init(self.rel_compress, xavier=True)
 
-        if self.pooling_dim != config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM:
+        if self.pooling_dim != in_channels:
             self.union_single_not_match = True
-            self.up_dim = nn.Linear(config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM, self.pooling_dim)
+            self.up_dim = nn.Linear(in_channels, self.pooling_dim)
             layer_init(self.up_dim, xavier=True)
         else:
             self.union_single_not_match = False
@@ -1828,9 +1828,9 @@ class VCTreePredictor(nn.Module):
         layer_init(self.post_emb, 10.0 * (1.0 / self.hidden_dim) ** 0.5, normal=True)
         layer_init(self.post_cat, xavier=True)
 
-        if self.pooling_dim != config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM:
+        if self.pooling_dim != in_channels:
             self.union_single_not_match = True
-            self.up_dim = nn.Linear(config.MODEL.ROI_BOX_HEAD.MLP_HEAD_DIM, self.pooling_dim)
+            self.up_dim = nn.Linear(in_channels, self.pooling_dim)
             layer_init(self.up_dim, xavier=True)
         else:
             self.union_single_not_match = False

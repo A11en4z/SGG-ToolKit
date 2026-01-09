@@ -59,6 +59,8 @@ def get_dataset_statistics(cfg):
     }
     logger.info('Save data statistics to: ' + str(save_file))
     logger.info('-'*100)
+    if cfg.OUTPUT_DIR and not os.path.exists(cfg.OUTPUT_DIR):
+        os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     torch.save(result, save_file)
     return result
 

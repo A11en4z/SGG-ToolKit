@@ -71,14 +71,25 @@ class ROIRelationHead(torch.nn.Module):
 
         
         self.union_feature_extractor = make_roi_relation_feature_extractor(cfg, in_channels)
-        
-        if cfg.MODEL.ATTRIBUTE_ON:
-            self.box_feature_extractor = make_roi_box_feature_extractor(cfg, in_channels, half_out=True)
-            self.att_feature_extractor = make_roi_attribute_feature_extractor(cfg, in_channels, half_out=True)
-            feat_dim = self.box_feature_extractor.out_channels * 2
+
+        is_rs = ("OBB" in str(cfg.Type)) or ("HBB" in str(cfg.Type))
+        rs_box_feat_dim = 1024
+
+        if is_rs:
+            self.box_feature_extractor = None
+            if cfg.MODEL.ATTRIBUTE_ON:
+                self.att_feature_extractor = make_roi_attribute_feature_extractor(cfg, in_channels, half_out=True)
+                feat_dim = int(rs_box_feat_dim) + int(self.att_feature_extractor.out_channels)
+            else:
+                feat_dim = int(rs_box_feat_dim)
         else:
-            self.box_feature_extractor = make_roi_box_feature_extractor(cfg, in_channels)
-            feat_dim = self.box_feature_extractor.out_channels
+            if cfg.MODEL.ATTRIBUTE_ON:
+                self.box_feature_extractor = make_roi_box_feature_extractor(cfg, in_channels, half_out=True)
+                self.att_feature_extractor = make_roi_attribute_feature_extractor(cfg, in_channels, half_out=True)
+                feat_dim = self.box_feature_extractor.out_channels * 2
+            else:
+                self.box_feature_extractor = make_roi_box_feature_extractor(cfg, in_channels)
+                feat_dim = self.box_feature_extractor.out_channels
         self.predictor = make_roi_relation_predictor(cfg, feat_dim)
         self.post_processor = make_roi_relation_post_processor(cfg)
 

@@ -284,6 +284,13 @@ class PairwiseFeatureExtractor(nn.Module):
             obj_pre_rep = cat((inst_roi_feats, obj_embed_by_pred_dist, pos_embed), -1)
         else:
             obj_pre_rep = cat((inst_roi_feats, pos_embed), -1)
+        expected_in = int(self.obj_hidden_linear.in_features)
+        if int(obj_pre_rep.shape[-1]) != expected_in:
+            if int(obj_pre_rep.shape[-1]) < expected_in:
+                pad = obj_pre_rep.new_zeros((batch_size, expected_in - int(obj_pre_rep.shape[-1])))
+                obj_pre_rep = torch.cat((obj_pre_rep, pad), dim=-1)
+            else:
+                obj_pre_rep = obj_pre_rep[:, :expected_in]
         # object level contextual feature
         augment_obj_feat = self.obj_hidden_linear(obj_pre_rep)  # map to hidden_dim
 
