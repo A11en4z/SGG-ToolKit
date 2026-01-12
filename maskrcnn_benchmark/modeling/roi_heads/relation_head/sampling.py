@@ -81,6 +81,16 @@ class RelationSampling(object):
 
             assert proposal.bbox.shape[0] == target.bbox.shape[0]
             tgt_rel_matrix = target.get_field("relation") # [tgt, tgt]
+            if tgt_rel_matrix.device != device:
+                tgt_rel_matrix = tgt_rel_matrix.to(device)
+            if tgt_rel_matrix.dim() != 2:
+                tgt_rel_matrix = tgt_rel_matrix.view(tgt_rel_matrix.shape[-2], tgt_rel_matrix.shape[-1])
+            if tgt_rel_matrix.shape[0] != num_prp or tgt_rel_matrix.shape[1] != num_prp:
+                fixed_rel_matrix = torch.zeros((num_prp, num_prp), dtype=tgt_rel_matrix.dtype, device=device)
+                h = min(num_prp, tgt_rel_matrix.shape[0])
+                w = min(num_prp, tgt_rel_matrix.shape[1])
+                fixed_rel_matrix[:h, :w] = tgt_rel_matrix[:h, :w]
+                tgt_rel_matrix = fixed_rel_matrix
             tgt_pair_idxs = torch.nonzero(tgt_rel_matrix > 0)
             assert tgt_pair_idxs.shape[1] == 2
             tgt_head_idxs = tgt_pair_idxs[:, 0].contiguous().view(-1)

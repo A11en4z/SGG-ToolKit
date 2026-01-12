@@ -1032,7 +1032,9 @@ class RotatedTwoStageDetector_Mul(nn.Module):
             all_score = torch.tensor(np.concatenate(no_cls_score,axis=0)).cuda()
             all_en = torch.tensor(np.concatenate(np_en,axis=0)).cuda()
 
-            all_score = all_score[:,POS]
+            if all_score.shape[1] > 1:
+                perm = torch.tensor([all_score.shape[1] - 1] + list(range(all_score.shape[1] - 1)), device=all_score.device)
+                all_score = all_score.index_select(1, perm)
 
             proposals = copy.deepcopy(targets[0])
             if 0 in all_box[:,0]:
@@ -1196,14 +1198,16 @@ class RotatedTwoStageDetector_Mul(nn.Module):
                                                     gt_bboxes_ignore, gt_masks, flag = True,
                                                          **kwargs)
             
-            cls_score = bbox_results["cls_score"] 
-            cls_score = cls_score[:,POS]
+            cls_score = bbox_results["cls_score"]
+            if cls_score.shape[1] > 1:
+                perm = torch.tensor([cls_score.shape[1] - 1] + list(range(cls_score.shape[1] - 1)), device=cls_score.device)
+                cls_score = cls_score.index_select(1, perm)
             
             start = 0    
             for pro in proposals:   
                 lens = len(pro)
                 pro.extra_fields["predict_logits"] = cls_score[start : start+lens,:]
-                start = lens
+                start += lens
 
             if self.ori_cfg.MODEL.ROI_RELATION_HEAD.PREDICTOR == "GCN_RELATION" or "HetSGG_Predictor":
 
