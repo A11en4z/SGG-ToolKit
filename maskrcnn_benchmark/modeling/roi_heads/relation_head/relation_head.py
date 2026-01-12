@@ -128,10 +128,11 @@ class ROIRelationHead(torch.nn.Module):
                 self.tasks = "Sgdets"
 
         if cfg.Type != "CV":
-            self.semafilter = sema_sx(flag=True if self.tasks == "Sgdets" else False) 
+            self.semafilter = sema_sx(cfg=cfg, flag=True if self.tasks == "Sgdets" else False) 
 
 
         self.filter_method = cfg.filter_method
+        self.ppg_threshold = getattr(cfg, "PPG_THRESHOLD", 60)
 
         self.RS_Leap = cfg.RS_Leap
 
@@ -228,9 +229,13 @@ class ROIRelationHead(torch.nn.Module):
             if self.Sema_F :
                 for i, proposal in enumerate(proposals):
                     if len(proposal) > 0:
+                        if "pred_labels" in proposal.extra_fields:
+                            obj_labels_for_filter = proposal.extra_fields["pred_labels"]
+                        else:
+                            obj_labels_for_filter = proposal.extra_fields["labels"]
                         sema_tmp = self.semafilter.sx(
                             rel_pair_idxs=rel_pair_idxs[i],
-                            obj=proposal.extra_fields["labels"],
+                            obj=obj_labels_for_filter,
                         )
                         rel_pair_idxs[i] = sema_tmp[0]
                     else:
@@ -239,7 +244,7 @@ class ROIRelationHead(torch.nn.Module):
                         )
 
             
-            if len(rel_pair_idxs[0]) > 10000 :
+            if len(rel_pair_idxs[0]) > self.ppg_threshold :
 
                 if self.filter_method == "random_filter":
                     if not self.training:

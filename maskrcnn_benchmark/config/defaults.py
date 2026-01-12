@@ -72,6 +72,7 @@ _C.WGAN.OUT = ""
 _C.Flag = False
 _C.Frebefor = False
 _C.filter_method = "random_filter"
+_C.PPG_THRESHOLD = 60
 _C.RS_Leap =  True
 _C.Type = "Large_RS_HBB"
 _C.CFA_pre = None
