@@ -132,7 +132,7 @@ class ROIRelationHead(torch.nn.Module):
 
 
         self.filter_method = cfg.filter_method
-        self.ppg_threshold = getattr(cfg, "PPG_THRESHOLD", 60)
+        self.ppg_threshold = getattr(cfg, "PPG_THRESHOLD", 10000)
 
         self.RS_Leap = cfg.RS_Leap
 
