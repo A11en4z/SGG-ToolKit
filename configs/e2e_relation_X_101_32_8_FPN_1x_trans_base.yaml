@@ -240,6 +240,6 @@ val_outpath : None
 test_outpath : None
 
 feat_update_step : 4 ## RPCM
-EXP_nums: 30
+EXP_nums: 10
 
 BASIC_ENCODER : 'Hybrid-Attention'

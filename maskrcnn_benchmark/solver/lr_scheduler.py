@@ -1,6 +1,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 from bisect import bisect_right
 from functools import wraps
+import math
 import torch
 from torch.optim import Optimizer
 
@@ -169,3 +170,45 @@ class WarmupReduceLROnPlateau(object):
 
         for param_group, lr in zip(self.optimizer.param_groups, self.get_lr()):
             param_group['lr'] = lr
+
+
+class WarmupCosineAnnealingLR(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(
+        self,
+        optimizer,
+        t_max,
+        eta_min=0.0,
+        warmup_factor=1.0 / 3,
+        warmup_iters=500,
+        warmup_method="linear",
+        last_epoch=-1,
+    ):
+        if warmup_method not in ("constant", "linear"):
+            raise ValueError(
+                "Only 'constant' or 'linear' warmup_method accepted"
+                "got {}".format(warmup_method)
+            )
+        if t_max is None or int(t_max) <= 0:
+            raise ValueError("t_max must be a positive integer. Got {}".format(t_max))
+        self.t_max = int(t_max)
+        self.eta_min = float(eta_min)
+        self.warmup_factor = warmup_factor
+        self.warmup_iters = int(warmup_iters)
+        self.warmup_method = warmup_method
+        super(WarmupCosineAnnealingLR, self).__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        warmup_factor = 1.0
+        if self.last_epoch < self.warmup_iters:
+            if self.warmup_method == "constant":
+                warmup_factor = float(self.warmup_factor)
+            elif self.warmup_method == "linear":
+                alpha = float(self.last_epoch) / float(max(self.warmup_iters, 1))
+                warmup_factor = float(self.warmup_factor) * (1 - alpha) + alpha
+            return [base_lr * warmup_factor for base_lr in self.base_lrs]
+
+        t = int(self.last_epoch) - int(self.warmup_iters)
+        t = max(t, 0)
+        t = min(t, self.t_max)
+        cosine = (1.0 + math.cos(math.pi * float(t) / float(self.t_max))) * 0.5
+        return [self.eta_min + (base_lr - self.eta_min) * cosine for base_lr in self.base_lrs]

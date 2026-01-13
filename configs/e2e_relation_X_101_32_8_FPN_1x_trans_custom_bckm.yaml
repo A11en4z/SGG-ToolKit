@@ -234,13 +234,13 @@ Only_val : False
 Only_test : False
 mbs : 512
 ite_resume : 0
-Print_iter: 30
+Print_iter: 20
 
 outpath : None
 val_outpath : None
 test_outpath : None
 
 feat_update_step : 4 ## RPCM
-EXP_nums: 30
+EXP_nums: 10
 
 BASIC_ENCODER : 'Hybrid-Attention'
