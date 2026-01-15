@@ -746,9 +746,14 @@ class BCKM(RPCM):
         )
         self.bckm_v1_rel_norm = nn.LayerNorm(self.mlp_dim)
 
-        # 硬逻辑先验：用于在 predicate logits 上做加性修正（第三部分）
-        # 约定：prior_logit_bias.npy 的 obj 维度通常不包含背景类（__background__=0）。
-        # 因此后续会根据 (bias_n_sub == num_obj_classes - 1) 自动判断是否需要做索引偏移。
+        # 硬逻辑先验（第三部分）：对关系分类 logits 做加性修正。
+        # - 文件：Enhance_Knowledge_npy/prior_logit_bias.npy
+        # - 形状：(N_sub, N_obj, N_pred)
+        #   - N_sub/N_obj：通常不包含背景类（__background__=0），即只覆盖 1..K 的实体类别。
+        #   - N_pred：谓词类别数（本项目 DIOR 为 22，不含 background）。
+        # - 数值语义：对“允许的关系”给接近 0 的 bias；对“禁止的关系”给极大负数（如 -1e4），
+        #   使 softmax 后概率趋近 0。
+        # - 对齐策略：当检测到 bias 的 obj 维度 == (num_obj_classes - 1) 时，自动执行索引 -1 偏移。
         root_dir = os.path.abspath(__file__)
         for _ in range(5):
             root_dir = os.path.dirname(root_dir)
@@ -762,15 +767,23 @@ class BCKM(RPCM):
     def _apply_prior_logit_bias(self, rel_logits, pair_pred):
         """对关系 logits 施加硬逻辑约束（logits 加性 bias）。
 
+        使用方式：在关系分类 logits 计算完成后、loss 计算前执行：
+            final_logits = raw_logits + prior_bias[subj_cls, obj_cls]
+
         Args:
             rel_logits: 关系分类的 raw logits，形状通常为 (num_rel, num_pred_cls)。
-                注意：不同训练脚本/数据集可能会带 background 维度，常见为 22 或 23。
+                - 本项目 DIOR 常见为 23（含 background=0）或 22（不含 background）。
             pair_pred: 每个关系对的 (subj_cls, obj_cls) 类别索引，形状 (num_rel, 2)。
-                - PredCls：应来自 GT labels
-                - SGCls/SGDet：应来自预测的 entity_preds
+                - PredCls：来自 GT labels
+                - SGCls/SGDet：来自预测的 entity_preds
 
         Returns:
-            与 rel_logits 同形状的 logits。若 prior 文件不存在或维度无法对齐，则原样返回。
+            与 rel_logits 同形状的 logits。
+
+        说明：
+            - 若 prior_logit_bias.npy 的 obj 维度不包含 background（通常如此），则需要将 subj/obj 类别索引减 1 对齐。
+            - 本实现全程使用张量运算（clamp + mask），避免在训练中引入 GPU->CPU 同步点。
+            - 对于越界/无效的 (subj,obj) 对，bias 视为 0（不改变 logits）。
         """
         if self.logit_bias_matrix.numel() == 0:
             return rel_logits
@@ -786,12 +799,13 @@ class BCKM(RPCM):
         subj_ids = pair_pred[:, 0].long()
         obj_ids = pair_pred[:, 1].long()
 
-        # prior_logit_bias.npy 通常不包含 background=0，需要把模型内的类别索引减 1 做对齐
+        # 自动对齐：若 prior 不含 background（0），则把模型内的类别索引减 1。
         obj_index_offset = 1 if bias_n_sub == (int(self.num_obj_classes) - 1) else 0
         if obj_index_offset:
             subj_ids = subj_ids - obj_index_offset
             obj_ids = obj_ids - obj_index_offset
 
+        # 有效性 mask：越界的 (subj,obj) 会被置为无效，bias 置 0。
         valid = (
             (subj_ids >= 0)
             & (subj_ids < bias_n_sub)
@@ -799,19 +813,21 @@ class BCKM(RPCM):
             & (obj_ids < bias_n_obj)
         )
 
-        current_bias = rel_logits.new_zeros((rel_logits.size(0), bias_n_pred))
-        if valid.any():
-            current_bias[valid] = self.logit_bias_matrix[subj_ids[valid], obj_ids[valid]].to(
-                dtype=current_bias.dtype, device=current_bias.device
-            )
+        # clamp 用于安全索引；随后用 valid mask 将无效行清零。
+        subj_ids_safe = subj_ids.clamp(0, bias_n_sub - 1)
+        obj_ids_safe = obj_ids.clamp(0, bias_n_obj - 1)
 
-        # 兼容 rel_logits 是否携带 background predicate 维度（常见：22 或 23）
+        current_bias = self.logit_bias_matrix[subj_ids_safe, obj_ids_safe]
+        current_bias = current_bias.to(dtype=rel_logits.dtype, device=rel_logits.device)
+        current_bias = current_bias * valid.to(dtype=rel_logits.dtype).unsqueeze(1)
+
+        # 兼容 rel_logits 是否带谓词 background 维度（常见：N_pred 或 N_pred+1）。
         if rel_logits.size(1) == bias_n_pred:
             return rel_logits + current_bias
         if rel_logits.size(1) == bias_n_pred + 1:
-            padded_bias = rel_logits.new_zeros((rel_logits.size(0), rel_logits.size(1)))
-            padded_bias[:, 1:] = current_bias
-            return rel_logits + padded_bias
+            out = rel_logits.clone()
+            out[:, 1:] = out[:, 1:] + current_bias
+            return out
         if rel_logits.size(1) + 1 == bias_n_pred:
             return rel_logits + current_bias[:, : rel_logits.size(1)]
 
