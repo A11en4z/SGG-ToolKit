@@ -746,6 +746,77 @@ class BCKM(RPCM):
         )
         self.bckm_v1_rel_norm = nn.LayerNorm(self.mlp_dim)
 
+        # 硬逻辑先验：用于在 predicate logits 上做加性修正（第三部分）
+        # 约定：prior_logit_bias.npy 的 obj 维度通常不包含背景类（__background__=0）。
+        # 因此后续会根据 (bias_n_sub == num_obj_classes - 1) 自动判断是否需要做索引偏移。
+        root_dir = os.path.abspath(__file__)
+        for _ in range(5):
+            root_dir = os.path.dirname(root_dir)
+        prior_bias_path = os.path.join(root_dir, "Enhance_Knowledge_npy", "prior_logit_bias.npy")
+        if os.path.exists(prior_bias_path):
+            logit_bias_matrix = torch.from_numpy(np.load(prior_bias_path)).float()
+        else:
+            logit_bias_matrix = torch.empty(0)
+        self.register_buffer("logit_bias_matrix", logit_bias_matrix, persistent=True)
+
+    def _apply_prior_logit_bias(self, rel_logits, pair_pred):
+        """对关系 logits 施加硬逻辑约束（logits 加性 bias）。
+
+        Args:
+            rel_logits: 关系分类的 raw logits，形状通常为 (num_rel, num_pred_cls)。
+                注意：不同训练脚本/数据集可能会带 background 维度，常见为 22 或 23。
+            pair_pred: 每个关系对的 (subj_cls, obj_cls) 类别索引，形状 (num_rel, 2)。
+                - PredCls：应来自 GT labels
+                - SGCls/SGDet：应来自预测的 entity_preds
+
+        Returns:
+            与 rel_logits 同形状的 logits。若 prior 文件不存在或维度无法对齐，则原样返回。
+        """
+        if self.logit_bias_matrix.numel() == 0:
+            return rel_logits
+        if rel_logits.numel() == 0 or rel_logits.size(0) == 0:
+            return rel_logits
+        if pair_pred is None or pair_pred.numel() == 0:
+            return rel_logits
+
+        bias_n_sub = int(self.logit_bias_matrix.size(0))
+        bias_n_obj = int(self.logit_bias_matrix.size(1))
+        bias_n_pred = int(self.logit_bias_matrix.size(2))
+
+        subj_ids = pair_pred[:, 0].long()
+        obj_ids = pair_pred[:, 1].long()
+
+        # prior_logit_bias.npy 通常不包含 background=0，需要把模型内的类别索引减 1 做对齐
+        obj_index_offset = 1 if bias_n_sub == (int(self.num_obj_classes) - 1) else 0
+        if obj_index_offset:
+            subj_ids = subj_ids - obj_index_offset
+            obj_ids = obj_ids - obj_index_offset
+
+        valid = (
+            (subj_ids >= 0)
+            & (subj_ids < bias_n_sub)
+            & (obj_ids >= 0)
+            & (obj_ids < bias_n_obj)
+        )
+
+        current_bias = rel_logits.new_zeros((rel_logits.size(0), bias_n_pred))
+        if valid.any():
+            current_bias[valid] = self.logit_bias_matrix[subj_ids[valid], obj_ids[valid]].to(
+                dtype=current_bias.dtype, device=current_bias.device
+            )
+
+        # 兼容 rel_logits 是否携带 background predicate 维度（常见：22 或 23）
+        if rel_logits.size(1) == bias_n_pred:
+            return rel_logits + current_bias
+        if rel_logits.size(1) == bias_n_pred + 1:
+            padded_bias = rel_logits.new_zeros((rel_logits.size(0), rel_logits.size(1)))
+            padded_bias[:, 1:] = current_bias
+            return rel_logits + padded_bias
+        if rel_logits.size(1) + 1 == bias_n_pred:
+            return rel_logits + current_bias[:, : rel_logits.size(1)]
+
+        return rel_logits
+
     def forward(self, proposals, rel_pair_idxs, rel_labels, rel_binarys, roi_features, union_features, logger=None):
         """BCKM 整体前向：融合阶段（可选 v1）+ 原型阶段（复用 RPCM）。"""
         entity_dists, entity_preds, rel_rep1, num_objs, num_rels, pair_pred, add_losses = self.forward_fusion_legacy(
@@ -758,6 +829,7 @@ class BCKM(RPCM):
             logger=logger,
         )
         rel_dists, add_losses = self.forward_prototype_legacy(rel_rep1, rel_labels, num_rels, add_losses)
+        rel_dists = self._apply_prior_logit_bias(rel_dists, pair_pred)
         entity_dists = entity_dists.split(num_objs, dim=0)
         rel_dists = rel_dists.split(num_rels, dim=0)
         return entity_dists, rel_dists, add_losses

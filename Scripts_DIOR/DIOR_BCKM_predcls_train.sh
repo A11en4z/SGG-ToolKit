@@ -34,7 +34,7 @@ export NUM_GUP=1
 export SEED="${SEED:-9891}"
 
 START_TIME="$(date "+%Y%m%d_%H%M%S")"
-MODEL_NAME="DIOR_BCKM_step2_predcls_train_seed${SEED}_${START_TIME}"
+MODEL_NAME="DIOR_BCKMv1.5_predcls_train_seed${SEED}_${START_TIME}"
 path="./Checkpoints/${MODEL_NAME}/"
 mkdir -p "$path"
 
