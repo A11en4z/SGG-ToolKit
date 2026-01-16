@@ -733,6 +733,8 @@ class BCKM(RPCM):
         knowledge_drop = float(getattr(bckm_cfg, "KNOWLEDGE_DROP", dropout_p)) if bckm_cfg is not None else dropout_p
         self.prototype_type = str(getattr(bckm_cfg, "PROTOTYPE_TYPE", "glove")) if bckm_cfg is not None else "glove"
         self.prototype_residual_l2_weight = float(getattr(bckm_cfg, "PROTOTYPE_RESIDUAL_L2_WEIGHT", 0.0)) if bckm_cfg is not None else 0.0
+        self.prototype_dist_loss2_2_weight = float(getattr(bckm_cfg, "PROTOTYPE_DIST_LOSS2_2_WEIGHT", 1.0)) if bckm_cfg is not None else 1.0
+        self.prototype_dist_loss2_exclude_bg = bool(getattr(bckm_cfg, "PROTOTYPE_DIST_LOSS2_EXCLUDE_BG", True)) if bckm_cfg is not None else True
 
         # tU（union / anti-evidence token）侧的投影与归一化
         self.bckm_v1_union_linear = nn.Linear(self.mlp_dim, self.mlp_dim)
@@ -1145,11 +1147,27 @@ class BCKM(RPCM):
             proto_dis_mat2 = (predicate_proto_a2 - predicate_proto_b2).norm(dim=2) ** 2
 
             sorted_proto_dis_mat1, _ = torch.sort(proto_dis_mat1, dim=1)
-            sorted_proto_dis_mat2, _ = torch.sort(proto_dis_mat2, dim=1)
             topK_proto_dis1 = sorted_proto_dis_mat1[:, :2].sum(dim=1) / 1
-            topK_proto_dis2 = sorted_proto_dis_mat2[:, :2].sum(dim=1) / 1
             dist_loss_1 = torch.max(torch.zeros(num_rel, device=rel_rep1.device), -topK_proto_dis1 + gamma2).mean()
-            dist_loss_2 = torch.max(torch.zeros(num_par, device=rel_rep1.device), -topK_proto_dis2 + gamma2).mean()
+            if getattr(self, "prototype_type", "glove") == "clip_residual" and bool(
+                getattr(self, "prototype_dist_loss2_exclude_bg", True)
+            ):
+                if num_par > 1:
+                    sorted_proto_dis_mat2, _ = torch.sort(proto_dis_mat2[1:, 1:], dim=1)
+                    topK_proto_dis2 = sorted_proto_dis_mat2[:, :2].sum(dim=1) / 1
+                    dist_loss_2 = torch.max(
+                        torch.zeros(num_par - 1, device=rel_rep1.device),
+                        -topK_proto_dis2 + gamma2,
+                    ).mean()
+                else:
+                    dist_loss_2 = torch.zeros((), device=rel_rep1.device)
+            else:
+                sorted_proto_dis_mat2, _ = torch.sort(proto_dis_mat2, dim=1)
+                topK_proto_dis2 = sorted_proto_dis_mat2[:, :2].sum(dim=1) / 1
+                dist_loss_2 = torch.max(torch.zeros(num_par, device=rel_rep1.device), -topK_proto_dis2 + gamma2).mean()
+
+            if getattr(self, "prototype_type", "glove") == "clip_residual":
+                dist_loss_2 = dist_loss_2 * float(getattr(self, "prototype_dist_loss2_2_weight", 1.0))
             add_losses.update({"dist_loss2_1": dist_loss_1})
             add_losses.update({"dist_loss2_2": dist_loss_2})
 
