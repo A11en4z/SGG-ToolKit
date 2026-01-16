@@ -726,6 +726,11 @@ class BCKM(RPCM):
         """
         super(BCKM, self).__init__(config, in_channels)
         dropout_p = float(getattr(self.dropout_pred, "p", 0.2))
+        bckm_cfg = getattr(getattr(self.cfg, "MODEL", None), "ROI_RELATION_HEAD", None)
+        bckm_cfg = getattr(bckm_cfg, "BCKM", None) if bckm_cfg is not None else None
+        self.use_knowledge = bool(getattr(bckm_cfg, "USE_KNOWLEDGE", True)) if bckm_cfg is not None else True
+        knowledge_dim = int(getattr(bckm_cfg, "KNOWLEDGE_DIM", 768)) if bckm_cfg is not None else 768
+        knowledge_drop = float(getattr(bckm_cfg, "KNOWLEDGE_DROP", dropout_p)) if bckm_cfg is not None else dropout_p
 
         # tU（union / anti-evidence token）侧的投影与归一化
         self.bckm_v1_union_linear = nn.Linear(self.mlp_dim, self.mlp_dim)
@@ -746,6 +751,43 @@ class BCKM(RPCM):
         )
         self.bckm_v1_rel_norm = nn.LayerNorm(self.mlp_dim)
 
+        root_dir = os.path.abspath(__file__)
+        for _ in range(5):
+            root_dir = os.path.dirname(root_dir)
+
+        clip_proto_path = os.path.join(root_dir, "Enhance_Knowledge_npy", "clip_vitl14_predicate_prototypes_mean.npy")
+        if os.path.exists(clip_proto_path):
+            clip_prototypes = torch.from_numpy(np.load(clip_proto_path)).float()
+        else:
+            clip_prototypes = torch.empty(0)
+
+        if clip_prototypes.numel() > 0 and clip_prototypes.dim() == 2 and int(clip_prototypes.size(1)) == knowledge_dim:
+            if int(clip_prototypes.size(0)) == int(self.num_rel_cls):
+                text_prototypes = clip_prototypes
+                self.text_prototypes_has_bg = True
+            else:
+                text_prototypes = torch.zeros(int(self.num_rel_cls), knowledge_dim, dtype=clip_prototypes.dtype)
+                n_fill = min(int(self.num_rel_cls) - 1, int(clip_prototypes.size(0)))
+                if n_fill > 0:
+                    text_prototypes[1 : 1 + n_fill] = clip_prototypes[:n_fill]
+                self.text_prototypes_has_bg = True
+        else:
+            text_prototypes = torch.empty(0)
+            self.text_prototypes_has_bg = False
+
+        self.register_buffer("text_prototypes", text_prototypes, persistent=True)
+        self.knowledge_proj = nn.Sequential(
+            nn.Linear(knowledge_dim, self.mlp_dim),
+            nn.ReLU(True),
+            nn.LayerNorm(self.mlp_dim),
+        )
+        self.knowledge_cross_attn = nn.MultiheadAttention(self.mlp_dim, 8, dropout=knowledge_drop)
+        self.knowledge_gate = nn.Sequential(
+            nn.Linear(self.mlp_dim * 2, self.mlp_dim),
+            nn.Sigmoid(),
+        )
+        self.knowledge_gamma = nn.Parameter(torch.zeros(1))
+
         # 硬逻辑先验（第三部分）：对关系分类 logits 做加性修正。
         # - 文件：Enhance_Knowledge_npy/prior_logit_bias.npy
         # - 形状：(N_sub, N_obj, N_pred)
@@ -754,9 +796,6 @@ class BCKM(RPCM):
         # - 数值语义：对“允许的关系”给接近 0 的 bias；对“禁止的关系”给极大负数（如 -1e4），
         #   使 softmax 后概率趋近 0。
         # - 对齐策略：当检测到 bias 的 obj 维度 == (num_obj_classes - 1) 时，自动执行索引 -1 偏移。
-        root_dir = os.path.abspath(__file__)
-        for _ in range(5):
-            root_dir = os.path.dirname(root_dir)
         prior_bias_path = os.path.join(root_dir, "Enhance_Knowledge_npy", "prior_logit_bias.npy")
         if os.path.exists(prior_bias_path):
             logit_bias_matrix = torch.from_numpy(np.load(prior_bias_path)).float()
@@ -832,6 +871,39 @@ class BCKM(RPCM):
             return rel_logits + current_bias[:, : rel_logits.size(1)]
 
         return rel_logits
+
+    def _inject_soft_knowledge(self, t_u):
+        """将软语义知识以 Cross-Attn+Gate 的方式注入 union token。
+
+        Args:
+            t_u: 视觉 union token，形状 (num_rel, D)。
+
+        Returns:
+            注入后的 union token，形状 (num_rel, D)。
+        """
+        if not getattr(self, "use_knowledge", False):
+            return t_u
+        if self.text_prototypes.numel() == 0:
+            return t_u
+        if t_u.numel() == 0 or t_u.size(0) == 0:
+            return t_u
+
+        q = t_u.unsqueeze(0)
+        proto = self.text_prototypes
+        if getattr(self, "text_prototypes_has_bg", False) and int(proto.size(0)) == int(self.num_rel_cls) and int(proto.size(0)) > 1:
+            proto = proto[1:]
+        if proto.numel() == 0:
+            return t_u
+
+        proto = proto.to(device=t_u.device, dtype=t_u.dtype)
+        k_base = self.knowledge_proj(proto)
+        k = k_base.unsqueeze(1).expand(-1, int(t_u.size(0)), -1).contiguous()
+        ctx, _ = self.knowledge_cross_attn(q, k, k, need_weights=False)
+        ctx = ctx.squeeze(0)
+
+        alpha = self.knowledge_gate(cat((t_u, ctx), dim=-1))
+        gamma = self.knowledge_gamma.to(device=t_u.device, dtype=t_u.dtype)
+        return t_u + gamma * alpha * ctx
 
     def forward(self, proposals, rel_pair_idxs, rel_labels, rel_binarys, roi_features, union_features, logger=None):
         """BCKM 整体前向：融合阶段（可选 v1）+ 原型阶段（复用 RPCM）。"""
@@ -957,9 +1029,9 @@ class BCKM(RPCM):
         # tU 的语义来源：对 union_features 下采样后做 vis2sem 得到 sem_pred（即 h(xu)）
         sem_pred = self.vis2sem(self.down_samp(union_features))
 
-        # 通过 cfg 控制融合策略：默认 legacy（保持与 RPCM 一致），v1 为新融合（无 mask + 有符号门控反证据）
+        # 通过 cfg 控制融合策略：默认 legacy（保持与 RPCM 一致），v1/v2 为新融合（无 mask + 有符号门控反证据）
         fusion_type = getattr(getattr(self.cfg.MODEL.ROI_RELATION_HEAD, "BCKM", None), "FUSION_TYPE", "legacy")
-        if fusion_type == "v1":
+        if fusion_type in ("v1", "v2"):
             # Step A: 构造 tU token（对 sem_pred 做一层投影 + 残差 + LN），作为“反证据/union”提示
             t_u0 = self.bckm_v1_union_norm(
                 self.bckm_v1_union_dropout(F.relu(self.bckm_v1_union_linear(sem_pred))) + sem_pred
@@ -978,6 +1050,8 @@ class BCKM(RPCM):
             else:
                 # Step E: 从交互后的 tokens 取出 tS/tO/tU，计算 fusion_so
                 t_s1, t_o1, t_u1 = tokens[0], tokens[1], tokens[2]
+                if fusion_type == "v2":
+                    t_u1 = self._inject_soft_knowledge(t_u1)
                 fusion_so = fusion_func(t_s1, t_o1)
 
                 # Step F: 有符号门控反证据
