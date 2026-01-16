@@ -731,6 +731,8 @@ class BCKM(RPCM):
         self.use_knowledge = bool(getattr(bckm_cfg, "USE_KNOWLEDGE", True)) if bckm_cfg is not None else True
         knowledge_dim = int(getattr(bckm_cfg, "KNOWLEDGE_DIM", 768)) if bckm_cfg is not None else 768
         knowledge_drop = float(getattr(bckm_cfg, "KNOWLEDGE_DROP", dropout_p)) if bckm_cfg is not None else dropout_p
+        self.prototype_type = str(getattr(bckm_cfg, "PROTOTYPE_TYPE", "glove")) if bckm_cfg is not None else "glove"
+        self.prototype_residual_l2_weight = float(getattr(bckm_cfg, "PROTOTYPE_RESIDUAL_L2_WEIGHT", 0.0)) if bckm_cfg is not None else 0.0
 
         # tU（union / anti-evidence token）侧的投影与归一化
         self.bckm_v1_union_linear = nn.Linear(self.mlp_dim, self.mlp_dim)
@@ -787,6 +789,7 @@ class BCKM(RPCM):
             nn.Sigmoid(),
         )
         self.knowledge_gamma = nn.Parameter(torch.zeros(1))
+        self.predicate_proto_delta = nn.Parameter(torch.zeros(int(self.num_rel_cls), int(self.mlp_dim)))
 
         # 硬逻辑先验（第三部分）：对关系分类 logits 做加性修正。
         # - 文件：Enhance_Knowledge_npy/prior_logit_bias.npy
@@ -1068,7 +1071,23 @@ class BCKM(RPCM):
 
     def forward_prototype_legacy(self, rel_rep1, rel_labels, num_rels, add_losses):
         """原型阶段前向（复用 RPCM，不在 BCKM 里改动训练目标）。"""
-        predicate_proto = self.W_pred(self.rel_embed.weight)
+        if (
+            getattr(self, "prototype_type", "glove") == "clip_residual"
+            and getattr(self, "use_knowledge", False)
+            and self.text_prototypes.numel() > 0
+        ):
+            base = self.text_prototypes.to(device=rel_rep1.device, dtype=rel_rep1.dtype)
+            predicate_proto = self.knowledge_proj(base)
+            if int(predicate_proto.size(0)) == int(self.num_rel_cls):
+                predicate_proto = predicate_proto.clone()
+                predicate_proto[0].zero_()
+            delta = self.predicate_proto_delta.to(device=rel_rep1.device, dtype=rel_rep1.dtype)
+            predicate_proto = predicate_proto + delta
+            if self.training and float(getattr(self, "prototype_residual_l2_weight", 0.0)) > 0:
+                l2 = delta[1:].pow(2).mean()
+                add_losses.update({"proto_delta_l2": l2 * float(self.prototype_residual_l2_weight)})
+        else:
+            predicate_proto = self.W_pred(self.rel_embed.weight)
 
         predicate_proto1 = predicate_proto
         predicate_proto_np = predicate_proto.detach().cpu().numpy()
