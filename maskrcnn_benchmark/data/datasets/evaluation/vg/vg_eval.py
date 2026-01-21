@@ -13,7 +13,8 @@ from maskrcnn_benchmark.structures.bounding_box import BoxList
 from maskrcnn_benchmark.structures.boxlist_ops import boxlist_iou
 from maskrcnn_benchmark.utils.miscellaneous import intersect_2d, argsort_desc, bbox_overlaps
 from maskrcnn_benchmark.data.datasets.evaluation.vg.sgg_eval import SGRecall, SGNoGraphConstraintRecall, SGZeroShotRecall, SGNGZeroShotRecall, SGPairAccuracy, SGMeanRecall, SGNGMeanRecall, SGAccumulateRecall
-from mmdet.core.bbox.iou_calculators import bbox_overlaps
+from mmdet.core.bbox.iou_calculators import bbox_overlaps as mmdet_bbox_overlaps
+from mmcv.ops import box_iou_rotated
 
 def _safe_harmonic_mean(a: float, b: float) -> float:
     """计算两个数的调和平均数，自动规避除零。"""
@@ -33,6 +34,69 @@ def _summarize_relation_metrics(result_dict, mode: str, ks):
         f1_k = _safe_harmonic_mean(r_k, mr_k)
         out[k] = dict(R=r_k, mR=mr_k, F1=f1_k)
     return out
+
+def _summarize_relation_splits(result_dict, mode: str, ks, head_ids, body_ids, tail_ids):
+    """按HEAD/BODY/TAIL分层统计mR@K，依赖SGMeanRecall的collect结果。"""
+    split_stats = {}
+    for k in ks:
+        collect = result_dict.get(mode + "_mean_recall_collect", {}).get(k, [])
+        def _avg(ids):
+            vals = []
+            for pid in ids:
+                arr = collect[pid] if pid < len(collect) else []
+                if isinstance(arr, (list, tuple)) and len(arr) > 0:
+                    vals.append(float(np.mean(arr)))
+                else:
+                    vals.append(0.0)
+            return float(np.mean(vals)) if len(vals) > 0 else 0.0
+        split_stats[k] = {
+            "head_mR": _avg(list(head_ids or [])),
+            "body_mR": _avg(list(body_ids or [])),
+            "tail_mR": _avg(list(tail_ids or [])),
+        }
+    return split_stats
+
+def _compute_detection_stats(groundtruths, predictions, iou_thr=0.5):
+    """计算检测Precision/Recall（按IoU阈值），类别需匹配。支持xyxy与旋转框。"""
+    total_gt = 0
+    total_pred = 0
+    matched_gt = 0
+    matched_pred = 0
+    for gt, pred in zip(groundtruths, predictions):
+        gt_boxes = gt.bbox.detach().cpu().numpy()
+        gt_labels = gt.get_field("labels").long().detach().cpu().numpy()
+        pred_boxes = pred.bbox.detach().cpu().numpy()
+        pred_labels = pred.get_field("pred_labels").long().detach().cpu().numpy()
+        total_gt += int(gt_labels.shape[0])
+        total_pred += int(pred_labels.shape[0])
+        if gt_boxes.shape[0] == 0 or pred_boxes.shape[0] == 0:
+            continue
+        used_pred = np.zeros(pred_labels.shape[0], dtype=bool)
+        for j in range(gt_labels.shape[0]):
+            lab = int(gt_labels[j])
+            cand_idx = np.where(pred_labels == lab)[0]
+            if cand_idx.size == 0:
+                continue
+            if gt_boxes.shape[1] == 5 and pred_boxes.shape[1] == 5:
+                ious = box_iou_rotated(
+                    torch.from_numpy(gt_boxes[j][None, :]).float(),
+                    torch.from_numpy(pred_boxes[cand_idx]).float()
+                ).numpy()[0]
+            else:
+                ious = mmdet_bbox_overlaps(
+                    torch.from_numpy(gt_boxes[j][None, :4]).float(),
+                    torch.from_numpy(pred_boxes[cand_idx, :4]).float()
+                ).numpy()[0]
+            best = int(np.argmax(ious)) if ious.size > 0 else -1
+            if best >= 0 and float(ious[best]) >= float(iou_thr):
+                matched_gt += 1
+                real_idx = int(cand_idx[best])
+                if not used_pred[real_idx]:
+                    used_pred[real_idx] = True
+                    matched_pred += 1
+    precision = float(matched_pred) / float(max(total_pred, 1))
+    recall = float(matched_gt) / float(max(total_gt, 1))
+    return dict(precision=precision, recall=recall, iou_thr=float(iou_thr), total_gt=int(total_gt), total_pred=int(total_pred))
 
 
 def do_vg_evaluation(
@@ -79,10 +143,7 @@ def do_vg_evaluation(
                 gt.bbox = prediction.bbox
             else:
                 predictions[image_id].bbox = prediction.bbox
-                tmp = dataset.RS_test_get_groundtruth(image_id, evaluation=True)
-                gt= prediction.extra_fields["target"]
-                if "Small" in cfg.Type:
-                    gt.extra_fields["relation_tuple"] =  tmp.extra_fields["relation_tuple"]
+                gt = dataset.RS_test_get_groundtruth(image_id, evaluation=True)
 
 
             groundtruths.append(gt)
@@ -181,6 +242,13 @@ def do_vg_evaluation(
         result_str += "F1(avg) over {}: {:.4f}\n".format(f1_avg_ks, f1_avg)
         result_str += '=' * 100 + '\n'
 
+        if "bbox" in iou_types:
+            det_stats = _compute_detection_stats(groundtruths, predictions, iou_thr=float(cfg.TEST.RELATION.IOU_THRESHOLD))
+            result_str += "Detection (IoU=%.2f): P=%.4f; R=%.4f; GT=%d; Pred=%d\n" % (
+                det_stats["iou_thr"], det_stats["precision"], det_stats["recall"], det_stats["total_gt"], det_stats["total_pred"]
+            )
+            result_str += '=' * 100 + '\n'
+
 
     logger.info(result_str)
     
@@ -198,7 +266,11 @@ def do_vg_evaluation(
 
 def save_output(output_folder, groundtruths, predictions, dataset):
     if output_folder:
-        torch.save({'groundtruths':groundtruths, 'predictions':predictions}, os.path.join(output_folder, "eval_results.pytorch"))
+        try:
+            torch.save({'groundtruths':groundtruths, 'predictions':predictions}, os.path.join(output_folder, "eval_results.pytorch"))
+        except (OSError, RuntimeError) as e:
+            logging.getLogger("maskrcnn_benchmark").warning("Skip saving eval_results.pytorch: %s", str(e))
+            return
 
         #with open(os.path.join(output_folder, "result.txt"), "w") as f:
         #    f.write(result_str)
@@ -219,8 +291,11 @@ def save_output(output_folder, groundtruths, predictions, dataset):
                 'groundtruth': groundtruth,
                 'prediction': prediction
                 })
-        with open(os.path.join(output_folder, "visual_info.json"), "w") as f:
-            json.dump(visual_info, f)
+        try:
+            with open(os.path.join(output_folder, "visual_info.json"), "w") as f:
+                json.dump(visual_info, f)
+        except OSError as e:
+            logging.getLogger("maskrcnn_benchmark").warning("Skip saving visual_info.json: %s", str(e))
 
 
 

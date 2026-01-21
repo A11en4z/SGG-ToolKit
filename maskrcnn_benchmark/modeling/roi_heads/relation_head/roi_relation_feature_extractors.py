@@ -148,7 +148,14 @@ def obb2poly_le90_batch(rboxes):
     if N == 0:
         return rboxes.new_zeros((rboxes.size(0), 4, 2))
 
+    finite_mask = torch.isfinite(rboxes)
+    if not finite_mask.all():
+        rboxes = torch.where(finite_mask, rboxes, torch.zeros_like(rboxes))
+
     x_ctr, y_ctr, width, height, angle = rboxes[:, 0], rboxes[:, 1], rboxes[:, 2], rboxes[:, 3], rboxes[:, 4]
+    width = width.clamp(min=1e-6)
+    height = height.clamp(min=1e-6)
+    angle = torch.where(torch.isfinite(angle), angle, torch.zeros_like(angle))
     tl_x, tl_y, br_x, br_y = -width * 0.5, -height * 0.5, width * 0.5, height * 0.5
 
     rects = torch.stack([tl_x, br_x, br_x, tl_x, tl_y, tl_y, br_y, br_y], dim=0).reshape(2, 4, N).permute(2, 0, 1)
@@ -240,6 +247,32 @@ class RelationFeatureExtractor(nn.Module):
         assert tail_proposal.bbox.shape[-1] == 5
         head_boxes = head_proposal.bbox
         tail_boxes = tail_proposal.bbox
+        head_finite = torch.isfinite(head_boxes)
+        if not head_finite.all():
+            head_boxes = torch.where(head_finite, head_boxes, torch.zeros_like(head_boxes))
+        tail_finite = torch.isfinite(tail_boxes)
+        if not tail_finite.all():
+            tail_boxes = torch.where(tail_finite, tail_boxes, torch.zeros_like(tail_boxes))
+        head_boxes = torch.stack(
+            [
+                head_boxes[:, 0],
+                head_boxes[:, 1],
+                head_boxes[:, 2].clamp(min=1e-6),
+                head_boxes[:, 3].clamp(min=1e-6),
+                torch.where(torch.isfinite(head_boxes[:, 4]), head_boxes[:, 4], torch.zeros_like(head_boxes[:, 4])),
+            ],
+            dim=1,
+        )
+        tail_boxes = torch.stack(
+            [
+                tail_boxes[:, 0],
+                tail_boxes[:, 1],
+                tail_boxes[:, 2].clamp(min=1e-6),
+                tail_boxes[:, 3].clamp(min=1e-6),
+                torch.where(torch.isfinite(tail_boxes[:, 4]), tail_boxes[:, 4], torch.zeros_like(tail_boxes[:, 4])),
+            ],
+            dim=1,
+        )
 
         h_cx = head_boxes[:, 0].detach().cpu().numpy()
         h_cy = head_boxes[:, 1].detach().cpu().numpy()
@@ -440,18 +473,52 @@ class RelationFeatureExtractor(nn.Module):
             assert OBj is not None
             rbox = []
             for kk in range(len(union_proposals)):
-                rbox.append(union_proposals[kk].bbox)
+                bbox = union_proposals[kk].bbox
+                if bbox.numel() > 0:
+                    finite_mask = torch.isfinite(bbox)
+                    if not finite_mask.all():
+                        bbox = torch.where(finite_mask, bbox, torch.zeros_like(bbox))
+                    if "OBB" in self.type:
+                        w = bbox[:, 2].clamp(min=1e-6)
+                        h = bbox[:, 3].clamp(min=1e-6)
+                        angle = torch.where(torch.isfinite(bbox[:, 4]), bbox[:, 4], torch.zeros_like(bbox[:, 4]))
+                        bbox = torch.stack([bbox[:, 0], bbox[:, 1], w, h, angle], dim=1)
+                    else:
+                        x1 = torch.min(bbox[:, 0], bbox[:, 2])
+                        y1 = torch.min(bbox[:, 1], bbox[:, 3])
+                        x2 = torch.max(bbox[:, 0], bbox[:, 2])
+                        y2 = torch.max(bbox[:, 1], bbox[:, 3])
+                        x2 = torch.where(x2 - x1 < 1e-6, x1 + 1e-6, x2)
+                        y2 = torch.where(y2 - y1 < 1e-6, y1 + 1e-6, y2)
+                        bbox = torch.stack([x1, y1, x2, y2], dim=1)
+                rbox.append(bbox.to(device))
             # 提取特征
             rois = self.rbbox2roi(rbox).to(device)
             union_vis_features = OBj._bbox_forward(x, rois, flag = True )
 
         else:
               union_vis_features = self.feature_extractor.pooler(x, union_proposals)
+        if union_vis_features.numel() > 0:
+            finite_mask = torch.isfinite(union_vis_features)
+            if not finite_mask.all():
+                union_vis_features = torch.where(finite_mask, union_vis_features, torch.zeros_like(union_vis_features))
+        if rect_features.numel() > 0:
+            rect_finite_mask = torch.isfinite(rect_features)
+            if not rect_finite_mask.all():
+                rect_features = torch.where(rect_finite_mask, rect_features, torch.zeros_like(rect_features))
               
         # merge two parts
         if self.separate_spatial:
             region_features = self.feature_extractor.forward_without_pool(union_vis_features)
             spatial_features = self.spatial_fc(rect_features.view(rect_features.size(0), -1))
+            if region_features.numel() > 0:
+                region_mask = torch.isfinite(region_features)
+                if not region_mask.all():
+                    region_features = torch.where(region_mask, region_features, torch.zeros_like(region_features))
+            if spatial_features.numel() > 0:
+                spatial_mask = torch.isfinite(spatial_features)
+                if not spatial_mask.all():
+                    spatial_features = torch.where(spatial_mask, spatial_features, torch.zeros_like(spatial_features))
             union_features = (region_features, spatial_features)
         else:
             union_features = union_vis_features + rect_features
@@ -460,6 +527,10 @@ class RelationFeatureExtractor(nn.Module):
                 union_features = OBj.bbox_head(union_features,flag = True)
             else:
                 union_features = self.feature_extractor.forward_without_pool(union_features) # (total_num_rel, out_channels)
+            if union_features.numel() > 0:
+                union_mask = torch.isfinite(union_features)
+                if not union_mask.all():
+                    union_features = torch.where(union_mask, union_features, torch.zeros_like(union_features))
 
 
         if self.cfg.MODEL.ATTRIBUTE_ON:
@@ -477,4 +548,3 @@ def make_roi_relation_feature_extractor(cfg, in_channels):
         cfg.MODEL.ROI_RELATION_HEAD.FEATURE_EXTRACTOR
     ]
     return func(cfg, in_channels)
-

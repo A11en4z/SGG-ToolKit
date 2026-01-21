@@ -11,6 +11,24 @@ from maskrcnn_benchmark.modeling.roi_heads.relation_head.modules.utils import lo
 from maskrcnn_benchmark.modeling.utils import cat
 from maskrcnn_benchmark.config import cfg
 
+def _tensor_finite_stats(tensor: torch.Tensor):
+    """返回张量有限值统计信息，便于定位 NaN/Inf 来源。"""
+    if tensor is None:
+        return {"numel": 0, "finite": 0, "non_finite": 0, "min": 0.0, "max": 0.0}
+    numel = int(tensor.numel())
+    if numel == 0:
+        return {"numel": 0, "finite": 0, "non_finite": 0, "min": 0.0, "max": 0.0}
+    finite_mask = torch.isfinite(tensor)
+    finite = int(finite_mask.sum().item())
+    non_finite = numel - finite
+    finite_vals = tensor[finite_mask]
+    if finite_vals.numel() == 0:
+        tmin, tmax = 0.0, 0.0
+    else:
+        tmin = float(finite_vals.min().item())
+        tmax = float(finite_vals.max().item())
+    return {"numel": numel, "finite": finite, "non_finite": non_finite, "min": tmin, "max": tmax}
+
 class RelationLossComputation(object):
     """
     Computes the loss for relation triplet.
@@ -58,6 +76,8 @@ class RelationLossComputation(object):
             self.rel_criterion_loss = FocalLoss(**focal_loss_param)
         else:
             self.rel_criterion_loss = nn.CrossEntropyLoss(weight=loss_weight)
+        self._nan_debug_logged_iter = -1
+        self._nan_debug_logged_count = 0
 
     def __call__(self, proposals, rel_labels, relation_logits,
                      refine_logits, relation_logits1=None, r1=None, r2=None,cls_new = None, cur_iter=None, rel_pair_idxs=None, all_changed_classes=None, all_change_to_classes=None):
@@ -91,9 +111,50 @@ class RelationLossComputation(object):
         rel_labels = cat(rel_labels, dim=0)
 
 
-        loss_relation = self.rel_criterion_loss(relation_logits, rel_labels.long())
+        rel_stats = _tensor_finite_stats(relation_logits)
+        obj_stats = _tensor_finite_stats(refine_obj_logits)
+        if rel_stats["non_finite"] > 0 or obj_stats["non_finite"] > 0:
+            rel_finite = torch.isfinite(relation_logits)
+            obj_finite = torch.isfinite(refine_obj_logits)
+            relation_logits = torch.where(rel_finite, relation_logits, torch.zeros_like(relation_logits))
+            refine_obj_logits = torch.where(obj_finite, refine_obj_logits, torch.zeros_like(refine_obj_logits))
+            should_log = cur_iter is None or int(cur_iter) != int(self._nan_debug_logged_iter)
+            if should_log:
+                rel_min = float(relation_logits.min().item()) if relation_logits.numel() > 0 else 0.0
+                rel_max = float(relation_logits.max().item()) if relation_logits.numel() > 0 else 0.0
+                obj_min = float(refine_obj_logits.min().item()) if refine_obj_logits.numel() > 0 else 0.0
+                obj_max = float(refine_obj_logits.max().item()) if refine_obj_logits.numel() > 0 else 0.0
+                iter_str = "" if cur_iter is None else f" iter={int(cur_iter)}"
+                print(
+                    "[RelationLoss][nan_guard]{} rel_non_finite={}/{} rel_logits_min={:.4e} rel_logits_max={:.4e} "
+                    "obj_non_finite={}/{} obj_logits_min={:.4e} obj_logits_max={:.4e}".format(
+                        iter_str,
+                        rel_stats["non_finite"],
+                        rel_stats["numel"],
+                        rel_min,
+                        rel_max,
+                        obj_stats["non_finite"],
+                        obj_stats["numel"],
+                        obj_min,
+                        obj_max,
+                    )
+                )
+                self._nan_debug_logged_iter = -1 if cur_iter is None else int(cur_iter)
+                self._nan_debug_logged_count += 1
 
+        loss_relation = self.rel_criterion_loss(relation_logits, rel_labels.long())
         loss_refine_obj = self.criterion_loss(refine_obj_logits, fg_labels.long())
+
+        if not torch.isfinite(loss_relation):
+            if cur_iter is None or int(cur_iter) != int(self._nan_debug_logged_iter):
+                iter_str = "" if cur_iter is None else f" iter={int(cur_iter)}"
+                print("[RelationLoss][nan_guard]{} loss_relation is non-finite, reset to 0.".format(iter_str))
+            loss_relation = torch.zeros((), device=relation_logits.device)
+        if not torch.isfinite(loss_refine_obj):
+            if cur_iter is None or int(cur_iter) != int(self._nan_debug_logged_iter):
+                iter_str = "" if cur_iter is None else f" iter={int(cur_iter)}"
+                print("[RelationLoss][nan_guard]{} loss_refine_obj is non-finite, reset to 0.".format(iter_str))
+            loss_refine_obj = torch.zeros((), device=refine_obj_logits.device)
 
             
 

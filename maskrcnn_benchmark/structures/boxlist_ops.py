@@ -430,6 +430,34 @@ def boxlist_union(boxlist1, boxlist2,flag1 = None,boxlist_mid = None,flag2 = Fal
             ##### 返回初始的cv2.minAreaRect的角度
             b1 = boxlist1.bbox
             b2 = boxlist2.bbox
+            if b1.numel() > 0:
+                b1_finite = torch.isfinite(b1)
+                if not b1_finite.all():
+                    b1 = torch.where(b1_finite, b1, torch.zeros_like(b1))
+                b1 = torch.stack(
+                    [
+                        b1[:, 0],
+                        b1[:, 1],
+                        b1[:, 2].clamp(min=1e-6),
+                        b1[:, 3].clamp(min=1e-6),
+                        torch.where(torch.isfinite(b1[:, 4]), b1[:, 4], torch.zeros_like(b1[:, 4])),
+                    ],
+                    dim=1,
+                )
+            if b2.numel() > 0:
+                b2_finite = torch.isfinite(b2)
+                if not b2_finite.all():
+                    b2 = torch.where(b2_finite, b2, torch.zeros_like(b2))
+                b2 = torch.stack(
+                    [
+                        b2[:, 0],
+                        b2[:, 1],
+                        b2[:, 2].clamp(min=1e-6),
+                        b2[:, 3].clamp(min=1e-6),
+                        torch.where(torch.isfinite(b2[:, 4]), b2[:, 4], torch.zeros_like(b2[:, 4])),
+                    ],
+                    dim=1,
+                )
             b1_poly = obb2poly_le90(b1)
             b2_poly = obb2poly_le90(b2)
             b_16 = torch.cat((b1_poly, b2_poly), dim=1).cpu()

@@ -37,21 +37,31 @@ class DOTADataset(CustomDataset):
     #CLASSES = ('airplane','boarding_bridge','terminal','apron','taxiway','runway','ship','boat','dock','crane','goods_yard','storehouse','tank','breakwater','chimney','cooling_tower','smoke','vapor','coal_yard','truck','gas_station','car','car_parking','truck_parking',)
    # CLASSES = ('airplane', 'boat', 'taxiway', 'boarding_bridge', 'tank', 'ship', 'crane', 'car', 'apron', 'dock', 'storehouse', 'goods_yard', 'truck', 'terminal', 'runway', 'breakwater', 'car_parking', 'bridge', 'cooling_tower', 'truck_parking', 'chimney', 'vapor', 'coal_yard', 'genset', 'smoke', 'gas_station')
    
-   ### 48
-    CLASSES = ('ship','boat','crane','goods_yard','tank','storehouse','breakwater','dock','airplane','boarding_bridge','runway','taxiway','terminal','apron','gas_station','truck','car','truck_parking','car_parking','bridge','cooling_tower','chimney','vapor','smoke','genset','coal_yard','lattice_tower', 'substation', 'wind_mill','cement_concrere_pavement', 'toll_gate', 'flood_dam', 'gravity_dam', 'ship_lock','ground_track_field','basketball_court','engineering_vehicle', 'foundation_pit', 'intersection', 'soccer_ball_field','tennis_court','tower_crane','unfinished_building','arch_dam','baseball_dianmond','stadium','containment_vessel','roundabout')
+#    ### 48
+    # CLASSES = ('ship','boat','crane','goods_yard','tank','storehouse','breakwater','dock','airplane','boarding_bridge','runway','taxiway','terminal','apron','gas_station','truck','car','truck_parking','car_parking','bridge','cooling_tower','chimney','vapor','smoke','genset','coal_yard','lattice_tower', 'substation', 'wind_mill','cement_concrere_pavement', 'toll_gate', 'flood_dam', 'gravity_dam', 'ship_lock','ground_track_field','basketball_court','engineering_vehicle', 'foundation_pit', 'intersection', 'soccer_ball_field','tennis_court','tower_crane','unfinished_building','arch_dam','baseball_dianmond','stadium','containment_vessel','roundabout')
     
     
-    PALETTE = [(255, 0, 0), (189, 183, 107), (0, 255, 0), (165, 42, 42),
+    # PALETTE = [(255, 0, 0), (189, 183, 107), (0, 255, 0), (165, 42, 42),
+    #            (138, 43, 226), (255, 128, 0), (255, 0, 255), (0, 255, 255),
+    #            (255, 193, 193), (0, 51, 153), (255, 250, 205), (0, 139, 139),
+    #            (255, 255, 0), (147, 116, 116), (0, 0, 255), (128, 0, 128),
+    #            (255, 69, 0), (255, 215, 0), (135, 38, 87), (205, 104, 137),
+    #             (3, 168, 158), (0, 199, 140), (255, 227, 132), (138, 43, 226),(206, 79, 57),(0, 55, 205), (189, 183, 107), (0, 255, 0), (165, 42, 42),
+    #            (138, 43, 226), (255, 128, 0), (255, 0, 255), (0, 255, 255),
+    #            (255, 193, 193), (0, 51, 153), (255, 250, 205), (0, 139, 139),
+    #            (255, 255, 0), (147, 116, 116), (0, 0, 255), (128, 0, 128),
+    #            (255, 69, 0), (255, 215, 0), (135, 38, 87), (205, 104, 137),
+    #             (3, 168, 158), (0, 199, 140), (255, 227, 132)]      
+    CLASSES = ('Expressway-Service-area', 'Expressway-toll-station', 'airplane',
+               'airport', 'baseballfield', 'basketballcourt', 'bridge',
+               'chimney', 'dam', 'golffield', 'groundtrackfield', 'harbor',
+               'overpass', 'ship', 'stadium', 'storagetank', 'tenniscourt',
+               'trainstation', 'vehicle', 'windmill')
+
+    PALETTE = [(165, 42, 42), (189, 183, 107), (0, 255, 0), (255, 0, 0),
                (138, 43, 226), (255, 128, 0), (255, 0, 255), (0, 255, 255),
                (255, 193, 193), (0, 51, 153), (255, 250, 205), (0, 139, 139),
-               (255, 255, 0), (147, 116, 116), (0, 0, 255), (128, 0, 128),
-               (255, 69, 0), (255, 215, 0), (135, 38, 87), (205, 104, 137),
-                (3, 168, 158), (0, 199, 140), (255, 227, 132), (138, 43, 226),(206, 79, 57),(0, 55, 205), (189, 183, 107), (0, 255, 0), (165, 42, 42),
-               (138, 43, 226), (255, 128, 0), (255, 0, 255), (0, 255, 255),
-               (255, 193, 193), (0, 51, 153), (255, 250, 205), (0, 139, 139),
-               (255, 255, 0), (147, 116, 116), (0, 0, 255), (128, 0, 128),
-               (255, 69, 0), (255, 215, 0), (135, 38, 87), (205, 104, 137),
-                (3, 168, 158), (0, 199, 140), (255, 227, 132)]      
+               (255, 255, 0), (147, 116, 116), (0, 0, 255)]
     ###
 
 
@@ -94,6 +104,11 @@ class DOTADataset(CustomDataset):
                 data_info = {}
                 img_id = osp.split(ann_file)[1][:-4]
                 img_name = img_id + '.png'
+                if self.img_prefix is not None and not osp.exists(
+                        osp.join(self.img_prefix, img_name)):
+                    alt_name = img_id + '.jpg'
+                    if osp.exists(osp.join(self.img_prefix, alt_name)):
+                        img_name = alt_name
                 data_info['filename'] = img_name
                 data_info['ann'] = {}
                 data_info['ann']['bboxes'] = []
@@ -104,6 +119,11 @@ class DOTADataset(CustomDataset):
                 data_info = {}
                 img_id = osp.split(ann_file)[1][:-4]
                 img_name = img_id + '.png'
+                if self.img_prefix is not None and not osp.exists(
+                        osp.join(self.img_prefix, img_name)):
+                    alt_name = img_id + '.jpg'
+                    if osp.exists(osp.join(self.img_prefix, alt_name)):
+                        img_name = alt_name
                 data_info['filename'] = img_name
                 data_info['ann'] = {}
                 gt_bboxes = []
@@ -357,6 +377,11 @@ class DOTADataset(CustomDataset):
                                                 submission_dir)
 
         return result_files, tmp_dir
+
+
+@ROTATED_DATASETS.register_module()
+class STARDataset(DOTADataset):
+    pass
 
 
 def _merge_func(info, CLASSES, iou_thr):

@@ -178,7 +178,8 @@ def encode_orientedbox_info(proposals):
         odist =  torch.sqrt(w**2 + h**2)
         imgdist = math.sqrt((wid)**2+(hei)**2)
         dist = odist/imgdist
-        info = torch.cat([w/wid, h/hei, cx/wid, cy/hei, w/h, th, dist, w*h/(wid*hei), cx/cy], dim=-1).view(-1, 9)
+        eps = 1e-6
+        info = torch.cat([w/wid, h/hei, cx/wid, cy/hei, w/(h+eps), th, dist, w*h/(wid*hei), cx/(cy+eps)], dim=-1).view(-1, 9)
         boxes_info.append(info)
 
     return torch.cat(boxes_info, dim=0)

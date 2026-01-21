@@ -32,6 +32,41 @@ import scipy.io as sio
 from .utils_motifs import  to_onehot
 
 
+def _finite_stats(value):
+    """返回张量或张量序列的非有限值统计信息。"""
+    if value is None:
+        return {"numel": 0, "non_finite": 0, "min": 0.0, "max": 0.0}
+    if torch.is_tensor(value):
+        numel = int(value.numel())
+        if numel == 0:
+            return {"numel": 0, "non_finite": 0, "min": 0.0, "max": 0.0}
+        finite_mask = torch.isfinite(value)
+        non_finite = numel - int(finite_mask.sum().item())
+        finite_vals = value[finite_mask]
+        if finite_vals.numel() == 0:
+            return {"numel": numel, "non_finite": non_finite, "min": 0.0, "max": 0.0}
+        return {
+            "numel": numel,
+            "non_finite": non_finite,
+            "min": float(finite_vals.min().item()),
+            "max": float(finite_vals.max().item()),
+        }
+    if isinstance(value, (list, tuple)):
+        total = {"numel": 0, "non_finite": 0, "min": 0.0, "max": 0.0}
+        mins = []
+        maxs = []
+        for item in value:
+            stats = _finite_stats(item)
+            total["numel"] += stats["numel"]
+            total["non_finite"] += stats["non_finite"]
+            if stats["numel"] > 0 and stats["non_finite"] < stats["numel"]:
+                mins.append(stats["min"])
+                maxs.append(stats["max"])
+        if len(mins) > 0:
+            total["min"] = float(min(mins))
+            total["max"] = float(max(maxs))
+        return total
+    return {"numel": 0, "non_finite": 0, "min": 0.0, "max": 0.0}
 
 def bbox2roi_HBB(bbox_list):
     """Convert a list of bboxes to roi format.
@@ -71,6 +106,7 @@ class ROIRelationHead(torch.nn.Module):
 
         
         self.union_feature_extractor = make_roi_relation_feature_extractor(cfg, in_channels)
+        self._nan_debug_iter = -1
 
         is_rs = ("OBB" in str(cfg.Type)) or ("HBB" in str(cfg.Type))
         rs_box_feat_dim = 1024
@@ -316,7 +352,11 @@ class ROIRelationHead(torch.nn.Module):
             rois = self.rbbox2roi(rbox)
             roi_fea = OBj.bbox_roi_extractor(
                 features[:OBj.bbox_roi_extractor.num_inputs], rois)
-            roi_features = OBj.bbox_head(roi_fea,flag = True)   ## nums,1024
+            if getattr(OBj, "with_shared_head", False):
+                roi_fea = OBj.shared_head(roi_fea)
+            roi_features = OBj.bbox_head(roi_fea, flag=True)
+            if roi_features.dim() > 2:
+                roi_features = roi_features.flatten(1)
         else:
             roi_features = self.box_feature_extractor(features, proposals)
 
@@ -330,6 +370,27 @@ class ROIRelationHead(torch.nn.Module):
             union_features = self.union_feature_extractor(features, proposals, rel_pair_idxs, OBj = OBj)
         else:
             union_features = None
+        
+        iter_val = -1 if ite is None else int(ite)
+        if iter_val != self._nan_debug_iter:
+            roi_stats = _finite_stats(roi_features)
+            union_stats = _finite_stats(union_features)
+            if roi_stats["non_finite"] > 0 or union_stats["non_finite"] > 0:
+                print(
+                    "[RelationHead][nan_guard] iter={} roi_non_finite={}/{} roi_min={:.4e} roi_max={:.4e} "
+                    "union_non_finite={}/{} union_min={:.4e} union_max={:.4e}".format(
+                        iter_val,
+                        roi_stats["non_finite"],
+                        roi_stats["numel"],
+                        roi_stats["min"],
+                        roi_stats["max"],
+                        union_stats["non_finite"],
+                        union_stats["numel"],
+                        union_stats["min"],
+                        union_stats["max"],
+                    )
+                )
+                self._nan_debug_iter = iter_val
 
        
 
@@ -357,6 +418,26 @@ class ROIRelationHead(torch.nn.Module):
                 raise ValueError("Unexpected predictor outputs length: {}".format(len(predictor_out)))
         else:
             raise ValueError("Unexpected predictor outputs type: {}".format(type(predictor_out)))
+        
+        if iter_val != self._nan_debug_iter:
+            rel_stats = _finite_stats(relation_logits)
+            obj_stats = _finite_stats(refine_logits)
+            if rel_stats["non_finite"] > 0 or obj_stats["non_finite"] > 0:
+                print(
+                    "[RelationHead][nan_guard] iter={} rel_non_finite={}/{} rel_min={:.4e} rel_max={:.4e} "
+                    "obj_non_finite={}/{} obj_min={:.4e} obj_max={:.4e}".format(
+                        iter_val,
+                        rel_stats["non_finite"],
+                        rel_stats["numel"],
+                        rel_stats["min"],
+                        rel_stats["max"],
+                        obj_stats["non_finite"],
+                        obj_stats["numel"],
+                        obj_stats["min"],
+                        obj_stats["max"],
+                    )
+                )
+                self._nan_debug_iter = iter_val
 
 
 
@@ -373,7 +454,14 @@ class ROIRelationHead(torch.nn.Module):
                 return roi_features, result, {}
 
             
-        loss_relation, loss_refine = self.loss_evaluator(proposals, rel_labels, relation_logits, refine_logits, cls_new = cls_new)
+        loss_relation, loss_refine = self.loss_evaluator(
+            proposals,
+            rel_labels,
+            relation_logits,
+            refine_logits,
+            cls_new=cls_new,
+            cur_iter=ite,
+        )
             
 
         if self.cfg.MODEL.ATTRIBUTE_ON and isinstance(loss_refine, (list, tuple)):

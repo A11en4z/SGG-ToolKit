@@ -1,5 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 import os
+import warnings
 
 from maskrcnn_benchmark.utils.imports import import_file
 
@@ -14,7 +15,16 @@ def setup_environment():
         setup_custom_environment(custom_module_path)
     else:
         # The default setup is a no-op
-        pass
+        warnings.filterwarnings(
+            "ignore",
+            message=r"DeprecationWarning: anchor_generator is deprecated,.*",
+            category=UserWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"On January 1, 2023, MMCV will release v2\.0\.0,.*",
+            category=UserWarning,
+        )
 
 
 def setup_custom_environment(custom_module_path):

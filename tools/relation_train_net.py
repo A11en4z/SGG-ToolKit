@@ -907,8 +907,22 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         end = time.time()
 
         ###### 读取预训练权重
-        checkpoint = load_checkpoint(model_mmcv, args_mmcv.checkpoint, map_location='cpu')
-        if 'CLASSES' in checkpoint.get('meta', {}):
+        checkpoint = torch.load(args_mmcv.checkpoint, map_location='cpu')
+        state_dict = checkpoint.get('state_dict', checkpoint)
+        model_state = model_mmcv.state_dict()
+        filtered_state = {
+            k: v for k, v in state_dict.items()
+            if k in model_state and v.size() == model_state[k].size()
+        }
+        load_result = model_mmcv.load_state_dict(filtered_state, strict=False)
+        logger.info(
+            "mmcv checkpoint loaded: matched={} missing={} unexpected={}".format(
+                len(filtered_state),
+                len(load_result.missing_keys),
+                len(load_result.unexpected_keys),
+            )
+        )
+        if 'meta' in checkpoint and 'CLASSES' in checkpoint['meta']:
             model_mmcv.CLASSES = checkpoint['meta']['CLASSES']
         else:
             model_mmcv.CLASSES = dataset.CLASSES
@@ -998,8 +1012,22 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         end = time.time()
       
         ###### 读取预训练权重
-        checkpoint = load_checkpoint(model_mmcv, args_mmcv.checkpoint, map_location='cpu')
-        if 'CLASSES' in checkpoint.get('meta', {}):
+        checkpoint = torch.load(args_mmcv.checkpoint, map_location='cpu')
+        state_dict = checkpoint.get('state_dict', checkpoint)
+        model_state = model_mmcv.state_dict()
+        filtered_state = {
+            k: v for k, v in state_dict.items()
+            if k in model_state and v.size() == model_state[k].size()
+        }
+        load_result = model_mmcv.load_state_dict(filtered_state, strict=False)
+        logger.info(
+            "mmcv checkpoint loaded: matched={} missing={} unexpected={}".format(
+                len(filtered_state),
+                len(load_result.missing_keys),
+                len(load_result.unexpected_keys),
+            )
+        )
+        if 'meta' in checkpoint and 'CLASSES' in checkpoint['meta']:
             model_mmcv.CLASSES = checkpoint['meta']['CLASSES']
         else:
             model_mmcv.CLASSES = dataset.CLASSES
@@ -1102,6 +1130,22 @@ def train(cfg, local_rank, distributed, logger, debug=False,use_GAN = False,mmcf
         optimizer.zero_grad()
         with amp.scale_loss(losses, optimizer) as scaled_losses:
             scaled_losses.backward()
+        
+        # Check for NaN gradients
+        grad_nan_found = False
+        for name, param in model.named_parameters():
+            if param.requires_grad and param.grad is not None:
+                if torch.isnan(param.grad).any():
+                    grad_nan_found = True
+                    logger.warning(f"NaN gradient detected in {name}! Skipping optimizer step.")
+                    break
+        
+        if grad_nan_found:
+            optimizer.zero_grad()
+            meters.update(time=time.time() - end, data=data_time)
+            end = time.time()
+            continue
+
         verbose = (iteration % cfg.SOLVER.PRINT_GRAD_FREQ) == 0 or print_first_grad  # print grad or not
 
 

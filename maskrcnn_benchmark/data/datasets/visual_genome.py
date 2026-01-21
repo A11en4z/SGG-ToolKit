@@ -61,8 +61,24 @@ class VGDataset(torch.utils.data.Dataset):
                 from mmrotate.datasets.custom_test_4_load import CustomDataset 
                 self.cus_data = CustomDataset(ann_file=mmcv["ann_file"],pipeline=mmcv["pipeline"],img_prefix= img_dir + "/") # 
                 # self.cus_data_sgdet = CustomDataset(ann_file=mmcv["ann_file"],pipeline=mmcv["pipeline"],img_prefix= img_dir + "/") # 
-                SGDT_test = [{'type': 'LoadImageFromFile'}, {'type': 'LoadAnnotations', 'with_bbox': True},  {'type': 'RResize', 'img_scale': (1024, 1024)},{'type': 'MultiScaleFlipAug', 'scale_factor': 1.0, 'flip': False, 'transforms': [{'type': 'Normalize', 'mean': [123.675, 116.28, 103.53], 'std': [58.395, 57.12, 57.375], 'to_rgb': True}, {'type': 'Pad', 'size_divisor': 32}, {'type': 'DefaultFormatBundle'}, {'type': 'Collect', 'keys': ['img', 'gt_bboxes', 'gt_labels']}]}]
-                SGDT = [{'type': 'LoadImageFromFile'}, {'type': 'LoadAnnotations', 'with_bbox': True}, {'type': 'RResize', 'img_scale': (1024, 1024)}, {'type': 'Normalize', 'mean': [123.675, 116.28, 103.53], 'std': [58.395, 57.12, 57.375], 'to_rgb': True}, {'type': 'Pad', 'size_divisor': 32}, {'type': 'DefaultFormatBundle'}, {'type': 'Collect', 'keys': ['img', 'gt_bboxes', 'gt_labels']}]
+                SGDT = copy.deepcopy(mmcv["pipeline"])
+                for step in SGDT:
+                    if step.get("type") in ("RRandomFlip", "RandomFlip"):
+                        step["flip_ratio"] = 0.0
+                    if step.get("type") == "MultiScaleFlipAug":
+                        step["flip"] = False
+                        for t in step.get("transforms", []):
+                            if t.get("type") in ("RRandomFlip", "RandomFlip"):
+                                t["flip_ratio"] = 0.0
+                SGDT_test = copy.deepcopy(mmcv["pipeline"])
+                for step in SGDT_test:
+                    if step.get("type") in ("RRandomFlip", "RandomFlip"):
+                        step["flip_ratio"] = 0.0
+                    if step.get("type") == "MultiScaleFlipAug":
+                        step["flip"] = False
+                        for t in step.get("transforms", []):
+                            if t.get("type") in ("RRandomFlip", "RandomFlip"):
+                                t["flip_ratio"] = 0.0
                 self.cus_data_sgdet = CustomDataset(ann_file=mmcv["ann_file"],pipeline=SGDT,img_prefix= img_dir + "/") # 
                 self.pipeline_sgdet = self.cus_data_sgdet.pipeline
                 
@@ -77,8 +93,24 @@ class VGDataset(torch.utils.data.Dataset):
                 from mmdetection_RS.mmdet.datasets.custom_RS import CustomDataset_RS_HBB
                 self.cus_data = CustomDataset_RS_HBB(ann_file=mmcv["ann_file"],pipeline=mmcv["pipeline"],img_prefix= img_dir + "/") # 
          
-                SGDT = [{'type': 'LoadImageFromFile'}, {'type': 'LoadAnnotations', 'with_bbox': True}, {'type': 'Resize', 'img_scale': (1024, 1024), 'keep_ratio': True}, {'type': 'Normalize', 'mean': [123.675, 116.28, 103.53], 'std': [58.395, 57.12, 57.375], 'to_rgb': True}, {'type': 'Pad', 'size_divisor': 32}, {'type': 'DefaultFormatBundle'}, {'type': 'Collect', 'keys': ['img', 'gt_bboxes', 'gt_labels']}]
-                SGDT_test = [{'type': 'LoadImageFromFile'}, {'type': 'LoadAnnotations', 'with_bbox': True}, {'type': 'Resize', 'img_scale': (1024, 1024), 'keep_ratio': True}, {'type': 'MultiScaleFlipAug', 'scale_factor': 1.0, 'flip': False, 'transforms': [{'type': 'Normalize', 'mean': [123.675, 116.28, 103.53], 'std': [58.395, 57.12, 57.375], 'to_rgb': True}, {'type': 'Pad', 'size_divisor': 32},  {'type': 'DefaultFormatBundle'}, {'type': 'Collect', 'keys': ['img', 'gt_bboxes', 'gt_labels']}]}]               
+                SGDT = copy.deepcopy(mmcv["pipeline"])
+                for step in SGDT:
+                    if step.get("type") in ("RRandomFlip", "RandomFlip"):
+                        step["flip_ratio"] = 0.0
+                    if step.get("type") == "MultiScaleFlipAug":
+                        step["flip"] = False
+                        for t in step.get("transforms", []):
+                            if t.get("type") in ("RRandomFlip", "RandomFlip"):
+                                t["flip_ratio"] = 0.0
+                SGDT_test = copy.deepcopy(mmcv["pipeline"])
+                for step in SGDT_test:
+                    if step.get("type") in ("RRandomFlip", "RandomFlip"):
+                        step["flip_ratio"] = 0.0
+                    if step.get("type") == "MultiScaleFlipAug":
+                        step["flip"] = False
+                        for t in step.get("transforms", []):
+                            if t.get("type") in ("RRandomFlip", "RandomFlip"):
+                                t["flip_ratio"] = 0.0
     
                 #  for train
         
@@ -283,6 +315,10 @@ class VGDataset(torch.utils.data.Dataset):
     
 
             self.pre_pipeline(results)
+            if 'flip' not in results:
+                results['flip'] = False
+            if 'flip_direction' not in results:
+                results['flip_direction'] = None
             results_sgdt = copy.deepcopy(results)
 
             data = self.pipeline(results)
@@ -435,23 +471,12 @@ class VGDataset(torch.utils.data.Dataset):
         img_info = self.get_img_info(index) # {'width': 500, 'url': 'https://cs.stanford.edu/people/rak248/VG_100K/2355667.jpg', 'height': 400, 'image_id': 2355667, 'coco_id': None, 'flickr_id': 538622274, 'anti_prop': 0.03171130260801489}
         w, h = img_info['width'], img_info['height']  ## {'image_id': 421, 'height': 8633, 'width': 5719}
         # important: recover original box from BOX_SCALE
-        box = self.ann_infos[index]['bboxes']
-        w_f = 1024/w
-        h_f = 1024/h
-       
+        box = self.ann_infos[index]['bboxes'].copy()
+        
         if box.shape[-1] == 5:
-            box[:,0] *= w_f
-            box[:,1] *= h_f
-            box[:,2:4] *= np.sqrt(w_f*h_f)
-            ### 缩放
             assert box.shape[-1] == 5  # guard against no boxes
             target = BoxList(box, (w, h), 'xywha')
         else:
-            box[:,0] *= w_f
-            box[:,1] *= h_f
-            box[:,2] *= w_f
-            box[:,3] *= h_f
-            ### 缩放
             assert box.shape[-1] == 4  # guard against no boxes
             target = BoxList(box, (w, h), 'xyxy')          
 
@@ -757,6 +782,19 @@ def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter
         if num_rel >= 0:
             rel_valid &= first_rel < num_rel
             rel_valid &= last_rel < num_rel
+
+        if split == 'train' and 'predicates' in roi_h5:
+            rel_predicates = roi_h5['predicates'][:, 0].astype(np.int64, copy=False)
+            has_pos_pred = np.zeros_like(rel_valid, dtype=bool)
+            valid_rel_indices = np.where(rel_valid)[0]
+            for i in valid_rel_indices:
+                r0 = int(first_rel[i])
+                r1 = int(last_rel[i])
+                if r0 >= 0:
+                    preds = rel_predicates[r0:r1 + 1]
+                    if preds.size > 0 and (preds > 0).any():
+                        has_pos_pred[i] = True
+            rel_valid &= has_pos_pred
         split_mask &= rel_valid
 
     image_index = np.where(split_mask)[0]
@@ -912,8 +950,16 @@ def load_graphs(roidb_file, split, num_im, num_val_im, filter_empty_rels, filter
         relationships.append(rels)
     
     #### 恢复出原始
-    scale_factor = 6000.0 / float(box_scale)
     for i in range(len(boxes)):
+        if img_info is not None and len(img_info) > 0:
+            img_idx = int(image_index[i])
+            if img_idx >= 0 and img_idx < len(img_info):
+                max_size = max(float(img_info[img_idx]["width"]), float(img_info[img_idx]["height"]))
+                scale_factor = max_size / float(box_scale)
+            else:
+                scale_factor = 6000.0 / float(box_scale)
+        else:
+            scale_factor = 6000.0 / float(box_scale)
         boxes[i] = boxes[i] * scale_factor
         poly[i] = poly[i] * scale_factor
 

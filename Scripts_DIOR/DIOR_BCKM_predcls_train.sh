@@ -31,7 +31,7 @@ fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export NUM_GUP=1
-export SEED="${SEED:-9891}"
+export SEED="${SEED:-42}"
 
 START_TIME="$(date "+%Y%m%d_%H%M%S")"
 MODEL_NAME="DIOR_BCKMv2_predcls_train_seed${SEED}_${START_TIME}"
@@ -87,10 +87,10 @@ trap cleanup_tensorboard EXIT
   DTYPE "float32" \
   GLOVE_DIR glove \
   SOLVER.IMS_PER_BATCH 16 TEST.IMS_PER_BATCH $NUM_GUP \
-  SOLVER.MAX_ITER 16000 SOLVER.BASE_LR 1e-3 \
+  SOLVER.MAX_ITER 20000 SOLVER.BASE_LR 1e-3 \
   SOLVER.SCHEDULE.TYPE WarmupMultiStepLR \
   MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
-  SOLVER.STEPS "(8000, 14000)" SOLVER.VAL_PERIOD 1000 \
+  SOLVER.STEPS "(11000, 18000)" SOLVER.VAL_PERIOD 1000 \
   SOLVER.CHECKPOINT_PERIOD 1000 \
   val_outpath "$path/inference/val" \
   test_outpath "$path/inference/test" \

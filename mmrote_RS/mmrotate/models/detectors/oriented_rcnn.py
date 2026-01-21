@@ -4,9 +4,6 @@ import torch
 from ..builder import ROTATED_DETECTORS
 from .two_stage import RotatedTwoStageDetector
 
-from maskrcnn_benchmark.modeling.detector.two_stage_RS_multi_12 import RotatedTwoStageDetector_Mul
-# from maskrcnn_benchmark.modeling.detector.roted import ROTATED
-
 from .two_stage_small import RotatedTwoStageDetector_small
 @ROTATED_DETECTORS.register_module()
 class OrientedRCNN(RotatedTwoStageDetector):

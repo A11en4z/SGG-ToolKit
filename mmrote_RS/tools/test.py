@@ -81,6 +81,7 @@ def parse_args():
         'It also allows nested list/tuple values, e.g. key="[(a,b),(c,d)]" '
         'Note that the quotation marks are necessary and that no white space '
         'is allowed.')
+    parser.add_argument('--ori-cfg-file', default='', help='maskrcnn config file path')
     parser.add_argument(
         '--eval-options',
         nargs='+',
@@ -120,6 +121,11 @@ def main():
         cfg.merge_from_dict(args.cfg_options)
 
     cfg = compat_cfg(cfg)
+    if args.ori_cfg_file:
+        from maskrcnn_benchmark.config import cfg as ori_cfg
+        ori_cfg.merge_from_file(args.ori_cfg_file)
+        ori_cfg.freeze()
+        cfg.model.ori_cfg = ori_cfg
 
     # set multi-process settings
     setup_multi_processes(cfg)
@@ -221,6 +227,11 @@ def main():
 
     if not distributed:
         model = MMDataParallel(model, device_ids=cfg.gpu_ids)
+        if args.show_dir is not None or args.show:
+            check_model = model.module if hasattr(model, 'module') else model
+            if not hasattr(check_model, 'show_result'):
+                args.show = False
+                args.show_dir = None
         outputs = single_gpu_test(model, data_loader, args.show, args.show_dir,
                                   args.show_score_thr)
     else:

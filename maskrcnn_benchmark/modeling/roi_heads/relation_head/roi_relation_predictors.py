@@ -370,28 +370,33 @@ class RPCM(nn.Module):
         return rel_inds, obj_obj_map, subj_pred_map, obj_pred_map, pred_pred_map
 
     def cluster_features(self,features, n_clusters):
-        # 
         features_np = features.clone().detach().cpu().numpy()
-
-        # 
-        kmeans = KMeans(n_clusters=n_clusters, n_init=10,random_state=0)
-
-        # 
+        if features_np.size == 0:
+            return torch.zeros((0, features_np.shape[1]), device=features.device), []
+        unique_features = np.unique(features_np, axis=0)
+        unique_count = int(unique_features.shape[0])
+        n_clusters = min(int(n_clusters), unique_count)
+        if n_clusters <= 1:
+            centers = torch.from_numpy(unique_features[:1])
+            subclusters = [list(range(1, int(features_np.shape[0]) + 1))]
+            return centers.cuda(), subclusters
+        kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0)
         cluster_indices = kmeans.fit_predict(features_np)
-
-        # 
         centers = torch.from_numpy(kmeans.cluster_centers_)
-
-        #      
         subclusters = [[] for _ in range(n_clusters)]
-
-        # 
         for i, cluster_index in enumerate(cluster_indices):
-            subclusters[cluster_index].append(i+1)
-
+            subclusters[cluster_index].append(i + 1)
         return centers.cuda(), subclusters
     
     def forward(self, proposals, rel_pair_idxs, rel_labels, rel_binarys, roi_features, union_features, logger=None ):
+
+        # Check weights for NaN
+        if torch.isnan(self.linear_sub.weight).any():
+             print("[RPCM][nan_guard] CRITICAL: self.linear_sub.weight contains NaN! Model parameters are corrupted.")
+        for name, param in self.W_sub.named_parameters():
+             if torch.isnan(param).any():
+                  print(f"[RPCM][nan_guard] CRITICAL: self.W_sub.{name} contains NaN! Model parameters are corrupted.")
+                  break
 
         add_losses = {}
 
@@ -480,8 +485,24 @@ class RPCM(nn.Module):
             sub = self.norm_sub(self.dropout_sub(torch.relu(self.linear_sub(sub))) + sub)
             obj = self.norm_obj(self.dropout_obj(torch.relu(self.linear_obj(obj))) + obj)
             #####
-
-            fusion_so.append(fusion_func(sub, obj)) # F(s, o)
+            
+            if torch.isnan(sub).any():
+                print("[RPCM][nan_guard] sub features contain NaN before clamp! Resetting.")
+                sub = torch.where(torch.isnan(sub), torch.zeros_like(sub), sub)
+            if torch.isnan(obj).any():
+                print("[RPCM][nan_guard] obj features contain NaN before clamp! Resetting.")
+                obj = torch.where(torch.isnan(obj), torch.zeros_like(obj), obj)
+            
+            # Clamp to avoid instability in fusion_func (x-y)**2 which can cause NaNs
+            sub = sub.clamp(min=-20, max=20)
+            obj = obj.clamp(min=-20, max=20)
+            
+            fused = fusion_func(sub, obj)
+            if not torch.isfinite(fused).all():
+                print("[RPCM][nan_guard] fused features contain NaN! Replaced with zeros.")
+                fused = torch.where(torch.isfinite(fused), fused, torch.zeros_like(fused))
+                
+            fusion_so.append(fused) # F(s, o)
             pair_preds.append(torch.stack((entity_pred[pair_idx[:, 0]], entity_pred[pair_idx[:, 1]]), dim=1))
 
         fusion_so = cat(fusion_so, dim=0)  
@@ -496,6 +517,8 @@ class RPCM(nn.Module):
 
         predicate_proto1 = predicate_proto
         predicate_proto_np = predicate_proto.detach().cpu().numpy()
+        if not np.isfinite(predicate_proto_np).all():
+            predicate_proto_np = np.nan_to_num(predicate_proto_np, nan=0.0, posinf=0.0, neginf=0.0)
         background_class = predicate_proto_np[0]
         other_classes = predicate_proto_np[1:]
 
@@ -503,11 +526,13 @@ class RPCM(nn.Module):
         if other_classes.shape[0] == 0:
             new_predicates = background_class[None, :]
         else:
-            n_clusters = min(max(1, effective_par - 1), int(other_classes.shape[0]))
-            if n_clusters >= other_classes.shape[0]:
-                centers = other_classes
+            unique_other = np.unique(other_classes, axis=0)
+            unique_count = int(unique_other.shape[0])
+            n_clusters = min(max(1, effective_par - 1), unique_count)
+            if n_clusters >= unique_count:
+                centers = unique_other
             else:
-                kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(other_classes)
+                kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(unique_other)
                 centers = kmeans.cluster_centers_
             new_predicates = np.vstack((background_class, centers))
 
@@ -520,10 +545,11 @@ class RPCM(nn.Module):
         predicate_proto1 = self.project_head(self.dropout_pred(torch.relu(predicate_proto1)))
         predicate_proto2 = self.project_head(self.dropout_pred(torch.relu(predicate_proto2)))
 
-        rel_rep_norm1 = rel_rep1 / rel_rep1.norm(dim=1, keepdim=True)  # r_norm
-        predicate_proto_norm1 = predicate_proto1 / predicate_proto1.norm(dim=1, keepdim=True)  # c_norm
-        predicate_proto_norm2 = predicate_proto2 / predicate_proto2.norm(dim=1, keepdim=True)
-        rel_dists = rel_rep_norm1 @ predicate_proto_norm1.t() * self.logit_scale.exp()
+        rel_rep_norm1 = rel_rep1 / rel_rep1.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        predicate_proto_norm1 = predicate_proto1 / predicate_proto1.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        predicate_proto_norm2 = predicate_proto2 / predicate_proto2.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        logit_scale = self.logit_scale.clamp(min=-10, max=10).exp()
+        rel_dists = rel_rep_norm1 @ predicate_proto_norm1.t() * logit_scale
         ### (Prototype-based Learning  ---- cosine similarity) & (Relation Prediction)
 
         # the rel_dists will be used to calculate the Le_sim with the ce_loss
@@ -542,9 +568,13 @@ class RPCM(nn.Module):
 
             num_rel = int(predicate_proto_norm1.size(0))
             num_par = int(predicate_proto_norm2.size(0))
+            denom_rel = max(1, num_rel * num_rel)
+            denom_par = max(1, num_par * num_par)
 
-            l21_1 = torch.norm(torch.norm(simil_mat1, p=2, dim=1), p=1) / (num_rel * num_rel)
-            l21_2 = torch.norm(torch.norm(simil_mat2, p=2, dim=1), p=1) / (num_par * num_par)
+            l21_1 = torch.norm(torch.norm(simil_mat1, p=2, dim=1), p=1) / denom_rel
+            l21_2 = torch.norm(torch.norm(simil_mat2, p=2, dim=1), p=1) / denom_par
+            l21_1 = torch.where(torch.isfinite(l21_1), l21_1, torch.zeros_like(l21_1))
+            l21_2 = torch.where(torch.isfinite(l21_2), l21_2, torch.zeros_like(l21_2))
             
             add_losses.update({"l21_1_loss": l21_1})  # Le_sim = ||S||_{2,1}
             add_losses.update({"l21_2_loss": l21_2})
@@ -567,6 +597,8 @@ class RPCM(nn.Module):
             topK_proto_dis2 = sorted_proto_dis_mat2[:, :2].sum(dim=1) / 1
             dist_loss_1 = torch.max(torch.zeros(num_rel, device=rel_rep1.device), -topK_proto_dis1 + gamma2).mean()
             dist_loss_2 = torch.max(torch.zeros(num_par, device=rel_rep1.device), -topK_proto_dis2 + gamma2).mean()
+            dist_loss_1 = torch.where(torch.isfinite(dist_loss_1), dist_loss_1, torch.zeros_like(dist_loss_1))
+            dist_loss_2 = torch.where(torch.isfinite(dist_loss_2), dist_loss_2, torch.zeros_like(dist_loss_2))
             add_losses.update({"dist_loss2_1": dist_loss_1})
             add_losses.update({"dist_loss2_2": dist_loss_2})
             ### end
@@ -574,21 +606,26 @@ class RPCM(nn.Module):
             ###  Prototype-based Learning  ---- Euclidean distance
             rel_labels = cat(rel_labels, dim=0)
             gamma1 = 1.0
-            rel_rep_expand = rel_rep1.unsqueeze(dim=1).expand(-1, num_rel, -1)  # r
-            predicate_proto_expand = predicate_proto1.unsqueeze(dim=0).expand(rel_labels.size(0), -1, -1)  # ci
-            distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2    # Distance Set G, gi = ||r-ci||_2^2
-            mask_neg = torch.ones(rel_labels.size(0), num_rel, device=rel_rep1.device)
-            mask_neg[torch.arange(rel_labels.size(0)), rel_labels] = 0
-            distance_set_neg = distance_set * mask_neg
-            distance_set_pos = distance_set[torch.arange(rel_labels.size(0)), rel_labels]  # gt i.e., g+;keyi jiezhe posdistance  jisuan density
-            sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
-            #K=max(int(0.1*len(sorted_distance_set_neg)),10)
-            k = min(11, num_rel)
-            denom = max(1, k - 1)
-            topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :k].sum(dim=1) / denom
-            #topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :6].sum(dim=1) / 5  # obtaining g-, where k1 = 10, 
-            loss_sum = torch.max(torch.zeros(rel_labels.size(0), device=rel_rep1.device), distance_set_pos - topK_sorted_distance_set_neg + gamma1).mean()
-            add_losses.update({"loss_dis": loss_sum})     # Le_euc = max(0, (g+) - (g-) + gamma1)
+            if rel_labels.numel() == 0 or num_rel <= 0:
+                loss_sum = torch.zeros((), device=rel_rep1.device)
+            else:
+                rel_rep_expand = rel_rep1.unsqueeze(dim=1).expand(-1, num_rel, -1)
+                predicate_proto_expand = predicate_proto1.unsqueeze(dim=0).expand(rel_labels.size(0), -1, -1)
+                distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2
+                mask_neg = torch.ones(rel_labels.size(0), num_rel, device=rel_rep1.device)
+                mask_neg[torch.arange(rel_labels.size(0)), rel_labels] = 0
+                distance_set_neg = distance_set * mask_neg
+                distance_set_pos = distance_set[torch.arange(rel_labels.size(0)), rel_labels]
+                sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
+                k = min(11, num_rel)
+                denom = max(1, k - 1)
+                topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :k].sum(dim=1) / denom
+                loss_sum = torch.max(
+                    torch.zeros(rel_labels.size(0), device=rel_rep1.device),
+                    distance_set_pos - topK_sorted_distance_set_neg + gamma1,
+                ).mean()
+                loss_sum = torch.where(torch.isfinite(loss_sum), loss_sum, torch.zeros_like(loss_sum))
+            add_losses.update({"loss_dis": loss_sum})
 
 
         rel_dists = rel_dists.split(num_rels, dim=0)
@@ -611,7 +648,9 @@ class RPCM(nn.Module):
             obj_labels = obj_labels.long()
             obj_embed = self.obj_embed1(obj_labels)
         else:
-            obj_logits = cat([proposal.get_field("predict_logits") for proposal in proposals], dim=0).detach()
+            obj_logits = cat([proposal.get_field("predict_logits") for proposal in proposals], dim=0)
+            if not self.training:
+                obj_logits = obj_logits.detach()
             obj_embed = F.softmax(obj_logits, dim=1) @ self.obj_embed1.weight
             # obj_embed = F.softmax(obj_logits, dim=1) @ self.obj_embed1.weight
         
@@ -792,6 +831,7 @@ class BCKM(RPCM):
         )
         self.knowledge_gamma = nn.Parameter(torch.zeros(1))
         self.predicate_proto_delta = nn.Parameter(torch.zeros(int(self.num_rel_cls), int(self.mlp_dim)))
+        self._nan_debug_logged = False
 
         # 硬逻辑先验（第三部分）：对关系分类 logits 做加性修正。
         # - 文件：Enhance_Knowledge_npy/prior_logit_bias.npy
@@ -1069,6 +1109,22 @@ class BCKM(RPCM):
             gate_sem_pred = torch.sigmoid(self.gate_pred(cat((fusion_so, sem_pred), dim=-1)))
             rel_rep1 = fusion_so - sem_pred * gate_sem_pred
 
+        if (not getattr(self, "_nan_debug_logged", False)) and rel_rep1.numel() > 0:
+            rel_min = float(rel_rep1.min().item())
+            rel_max = float(rel_rep1.max().item())
+            rel_norm_min = float(rel_rep1.norm(dim=1).min().item())
+            sem_min = float(sem_pred.min().item()) if sem_pred.numel() > 0 else 0.0
+            sem_max = float(sem_pred.max().item()) if sem_pred.numel() > 0 else 0.0
+            union_min = float(union_features.min().item()) if union_features.numel() > 0 else 0.0
+            union_max = float(union_features.max().item()) if union_features.numel() > 0 else 0.0
+            rel_cnt = int(sum(r.shape[0] for r in rel_pair_idxs))
+            print(
+                f"[BCKM][fusion_guard] rel_cnt={rel_cnt} rel_rep1_min={rel_min:.4e} rel_rep1_max={rel_max:.4e} "
+                f"rel_norm_min={rel_norm_min:.4e} sem_min={sem_min:.4e} sem_max={sem_max:.4e} "
+                f"union_min={union_min:.4e} union_max={union_max:.4e}"
+            )
+            self._nan_debug_logged = True
+
         return entity_dists, entity_preds, rel_rep1, num_objs, num_rels, pair_pred, add_losses
 
     def forward_prototype_legacy(self, rel_rep1, rel_labels, num_rels, add_losses):
@@ -1091,8 +1147,15 @@ class BCKM(RPCM):
         else:
             predicate_proto = self.W_pred(self.rel_embed.weight)
 
+        predicate_proto = torch.where(
+            torch.isfinite(predicate_proto),
+            predicate_proto,
+            torch.zeros_like(predicate_proto),
+        )
         predicate_proto1 = predicate_proto
         predicate_proto_np = predicate_proto.detach().cpu().numpy()
+        if not np.isfinite(predicate_proto_np).all():
+            predicate_proto_np = np.nan_to_num(predicate_proto_np, nan=0.0, posinf=0.0, neginf=0.0)
         background_class = predicate_proto_np[0]
         other_classes = predicate_proto_np[1:]
 
@@ -1100,11 +1163,13 @@ class BCKM(RPCM):
         if other_classes.shape[0] == 0:
             new_predicates = background_class[None, :]
         else:
-            n_clusters = min(max(1, effective_par - 1), int(other_classes.shape[0]))
-            if n_clusters >= other_classes.shape[0]:
-                centers = other_classes
+            unique_other = np.unique(other_classes, axis=0)
+            unique_count = int(unique_other.shape[0])
+            n_clusters = min(max(1, effective_par - 1), unique_count)
+            if n_clusters >= unique_count:
+                centers = unique_other
             else:
-                kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(other_classes)
+                kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0).fit(unique_other)
                 centers = kmeans.cluster_centers_
             new_predicates = np.vstack((background_class, centers))
 
@@ -1117,10 +1182,43 @@ class BCKM(RPCM):
         predicate_proto1 = self.project_head(self.dropout_pred(torch.relu(predicate_proto1)))
         predicate_proto2 = self.project_head(self.dropout_pred(torch.relu(predicate_proto2)))
 
-        rel_rep_norm1 = rel_rep1 / rel_rep1.norm(dim=1, keepdim=True)
-        predicate_proto_norm1 = predicate_proto1 / predicate_proto1.norm(dim=1, keepdim=True)
-        predicate_proto_norm2 = predicate_proto2 / predicate_proto2.norm(dim=1, keepdim=True)
-        rel_dists = rel_rep_norm1 @ predicate_proto_norm1.t() * self.logit_scale.exp()
+        rel_rep1 = torch.where(torch.isfinite(rel_rep1), rel_rep1, torch.zeros_like(rel_rep1))
+        predicate_proto1 = torch.where(
+            torch.isfinite(predicate_proto1),
+            predicate_proto1,
+            torch.zeros_like(predicate_proto1),
+        )
+        predicate_proto2 = torch.where(
+            torch.isfinite(predicate_proto2),
+            predicate_proto2,
+            torch.zeros_like(predicate_proto2),
+        )
+
+        if (
+            (not torch.isfinite(rel_rep1).all())
+            or (not torch.isfinite(predicate_proto1).all())
+            or (rel_rep1.numel() > 0 and (rel_rep1.norm(dim=1) <= 1e-6).any())
+            or (predicate_proto1.numel() > 0 and (predicate_proto1.norm(dim=1) <= 1e-6).any())
+        ):
+            if not self._nan_debug_logged:
+                rel_min = float(rel_rep1.min().item()) if rel_rep1.numel() > 0 else 0.0
+                rel_max = float(rel_rep1.max().item()) if rel_rep1.numel() > 0 else 0.0
+                proto_min = float(predicate_proto1.min().item()) if predicate_proto1.numel() > 0 else 0.0
+                proto_max = float(predicate_proto1.max().item()) if predicate_proto1.numel() > 0 else 0.0
+                rel_norm_min = float(rel_rep1.norm(dim=1).min().item()) if rel_rep1.numel() > 0 else 0.0
+                proto_norm_min = float(predicate_proto1.norm(dim=1).min().item()) if predicate_proto1.numel() > 0 else 0.0
+                print(
+                    f"[BCKM][nan_guard] rel_rep1_min={rel_min:.4e} rel_rep1_max={rel_max:.4e} "
+                    f"proto1_min={proto_min:.4e} proto1_max={proto_max:.4e} "
+                    f"rel_norm_min={rel_norm_min:.4e} proto_norm_min={proto_norm_min:.4e}"
+                )
+                self._nan_debug_logged = True
+
+        rel_rep_norm1 = rel_rep1 / rel_rep1.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        predicate_proto_norm1 = predicate_proto1 / predicate_proto1.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        predicate_proto_norm2 = predicate_proto2 / predicate_proto2.norm(dim=1, keepdim=True).clamp(min=1e-6)
+        logit_scale = self.logit_scale.clamp(min=-10, max=10).exp()
+        rel_dists = rel_rep_norm1 @ predicate_proto_norm1.t() * logit_scale
 
         if self.training:
             target_rpredicate_proto_norm1 = predicate_proto_norm1.clone().detach()
@@ -1173,21 +1271,25 @@ class BCKM(RPCM):
 
             rel_labels_cat = cat(rel_labels, dim=0)
             gamma1 = 1.0
-            rel_rep_expand = rel_rep1.unsqueeze(dim=1).expand(-1, num_rel, -1)
-            predicate_proto_expand = predicate_proto1.unsqueeze(dim=0).expand(rel_labels_cat.size(0), -1, -1)
-            distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2
-            mask_neg = torch.ones(rel_labels_cat.size(0), num_rel, device=rel_rep1.device)
-            mask_neg[torch.arange(rel_labels_cat.size(0)), rel_labels_cat] = 0
-            distance_set_neg = distance_set * mask_neg
-            distance_set_pos = distance_set[torch.arange(rel_labels_cat.size(0)), rel_labels_cat]
-            sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
-            k = min(11, num_rel)
-            denom = max(1, k - 1)
-            topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :k].sum(dim=1) / denom
-            loss_sum = torch.max(
-                torch.zeros(rel_labels_cat.size(0), device=rel_rep1.device),
-                distance_set_pos - topK_sorted_distance_set_neg + gamma1,
-            ).mean()
+            if rel_labels_cat.numel() == 0 or num_rel <= 0:
+                loss_sum = torch.zeros((), device=rel_rep1.device)
+            else:
+                rel_rep_expand = rel_rep1.unsqueeze(dim=1).expand(-1, num_rel, -1)
+                predicate_proto_expand = predicate_proto1.unsqueeze(dim=0).expand(rel_labels_cat.size(0), -1, -1)
+                distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2
+                mask_neg = torch.ones(rel_labels_cat.size(0), num_rel, device=rel_rep1.device)
+                mask_neg[torch.arange(rel_labels_cat.size(0)), rel_labels_cat] = 0
+                distance_set_neg = distance_set * mask_neg
+                distance_set_pos = distance_set[torch.arange(rel_labels_cat.size(0)), rel_labels_cat]
+                sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
+                k = min(11, num_rel)
+                denom = max(1, k - 1)
+                topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :k].sum(dim=1) / denom
+                loss_sum = torch.max(
+                    torch.zeros(rel_labels_cat.size(0), device=rel_rep1.device),
+                    distance_set_pos - topK_sorted_distance_set_neg + gamma1,
+                ).mean()
+                loss_sum = torch.where(torch.isfinite(loss_sum), loss_sum, torch.zeros_like(loss_sum))
             add_losses.update({"loss_dis": loss_sum})
 
         return rel_dists, add_losses
@@ -1362,25 +1464,22 @@ class PrototypeEmbeddingNetwork(nn.Module):
     #     return centers
 
     def cluster_features(self,features, n_clusters):
-        # 将输入张量转换为numpy数组
         features_np = features.clone().detach().cpu().numpy()
-
-        # 创建KMeans对象
-        kmeans = KMeans(n_clusters=n_clusters, n_init=10,random_state=0)
-
-        # 拟合数据并预测每个数据点的簇索引
+        if features_np.size == 0:
+            return torch.zeros((0, features_np.shape[1]), device=features.device), []
+        unique_features = np.unique(features_np, axis=0)
+        unique_count = int(unique_features.shape[0])
+        n_clusters = min(int(n_clusters), unique_count)
+        if n_clusters <= 1:
+            centers = torch.from_numpy(unique_features[:1])
+            subclusters = [list(range(1, int(features_np.shape[0]) + 1))]
+            return centers.cuda(), subclusters
+        kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=0)
         cluster_indices = kmeans.fit_predict(features_np)
-
-        # 获取簇中心并转换为张量
         centers = torch.from_numpy(kmeans.cluster_centers_)
-
-        # 创建一个空列表来保存每个簇的子类索引
         subclusters = [[] for _ in range(n_clusters)]
-
-        # 遍历每个数据点，将其添加到对应的簇索引列表中
         for i, cluster_index in enumerate(cluster_indices):
-            subclusters[cluster_index].append(i+1)
-
+            subclusters[cluster_index].append(i + 1)
         return centers.cuda(), subclusters
 
     # def cluster_and_min(self,tensor):
@@ -1548,17 +1647,24 @@ class PrototypeEmbeddingNetwork(nn.Module):
             ###  Prototype-based Learning  ---- Euclidean distance
             rel_labels = cat(rel_labels, dim=0)
             gamma1 = 1.0
-            rel_rep_expand = rel_rep.unsqueeze(dim=1).expand(-1, num_predicates, -1)  # r
-            predicate_proto_expand = predicate_proto.unsqueeze(dim=0).expand(rel_labels.size(0), -1, -1)  # ci
-            distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2    # Distance Set G, gi = ||r-ci||_2^2   # nums,31
-            mask_neg = torch.ones(rel_labels.size(0), num_predicates, device=distance_set.device)  # nums,31
-            mask_neg[torch.arange(rel_labels.size(0)), rel_labels] = 0 ##  torch.arange(rel_labels.size(0)) 0-90,  rel_labels 长为90
-            distance_set_neg = distance_set * mask_neg
-            distance_set_pos = distance_set[torch.arange(rel_labels.size(0)), rel_labels]  # gt i.e., g+
-            sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)  ## dis - 小到大
-            topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :11].sum(dim=1) / 10  # obtaining g-, where k1 = 10,
-            loss_sum = torch.max(torch.zeros(rel_labels.size(0)).cuda(), distance_set_pos - topK_sorted_distance_set_neg + gamma1).mean()
-            add_losses.update({"loss_dis": loss_sum})     # Le_euc = max(0, (g+) - (g-) + gamma1)
+            if rel_labels.numel() == 0 or num_predicates <= 0:
+                loss_sum = torch.zeros((), device=rel_rep.device)
+            else:
+                rel_rep_expand = rel_rep.unsqueeze(dim=1).expand(-1, num_predicates, -1)
+                predicate_proto_expand = predicate_proto.unsqueeze(dim=0).expand(rel_labels.size(0), -1, -1)
+                distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2
+                mask_neg = torch.ones(rel_labels.size(0), num_predicates, device=distance_set.device)
+                mask_neg[torch.arange(rel_labels.size(0)), rel_labels] = 0
+                distance_set_neg = distance_set * mask_neg
+                distance_set_pos = distance_set[torch.arange(rel_labels.size(0)), rel_labels]
+                sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
+                topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :11].sum(dim=1) / 10
+                loss_sum = torch.max(
+                    torch.zeros(rel_labels.size(0), device=rel_rep.device),
+                    distance_set_pos - topK_sorted_distance_set_neg + gamma1,
+                ).mean()
+                loss_sum = torch.where(torch.isfinite(loss_sum), loss_sum, torch.zeros_like(loss_sum))
+            add_losses.update({"loss_dis": loss_sum})
             ### end
 
 
@@ -1584,7 +1690,9 @@ class PrototypeEmbeddingNetwork(nn.Module):
             obj_labels = obj_labels.long()
             obj_embed = self.obj_embed1(obj_labels)
         else:
-            obj_logits = cat([proposal.get_field("predict_logits") for proposal in proposals], dim=0).detach()
+            obj_logits = cat([proposal.get_field("predict_logits") for proposal in proposals], dim=0)
+            if not self.training:
+                obj_logits = obj_logits.detach()
 
 
             obj_embed = F.softmax(obj_logits, dim=1) @ self.obj_embed1.weight

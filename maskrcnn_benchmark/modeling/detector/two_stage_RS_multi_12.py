@@ -66,11 +66,11 @@ def hs(pathches_cls_scores, p_keeps):
     all_cls = [item for sublist in pathches_cls_scores for item in sublist]
     
     mer_cls_scores = []
-    for cls_id in np.arange(48):
+    for cls_id in np.arange(len(p_keeps)):
         cls_part = [all_cls[pp][cls_id].reshape((1, 49)) if all_cls[pp][cls_id].ndim == 1 
                     else all_cls[pp][cls_id].reshape((1,49,5)) if all_cls[pp][cls_id].shape == (49, 5) 
                     else all_cls[pp][cls_id] 
-                    for pp in np.arange(len(all_cls)) if len(all_cls[pp][cls_id]) != 0]
+                    for pp in np.arange(len(all_cls)) if cls_id < len(all_cls[pp]) and len(all_cls[pp][cls_id]) != 0]
         mer_cls_scores.append(np.concatenate(cls_part, axis=0) if cls_part else [])
 
     # new_mer_cls_scores = [np.expand_dims(ck1[ck2], axis=0) if len(ck2) == 1 else ck1[ck2] 
@@ -92,11 +92,11 @@ def hs(pathches_cls_scores, p_keeps):
 
 def hs_all(all_scores, all_keeps):
     mer_cls_scores = []
-    for cls_id in np.arange(48):
+    for cls_id in np.arange(len(all_keeps)):
         cls_part = [all_scores[pp][cls_id].reshape((1, 49)) if all_scores[pp][cls_id].ndim == 1 
                     else all_scores[pp][cls_id].reshape((1,49,5)) if all_scores[pp][cls_id].shape == (49, 5) 
                     else all_scores[pp][cls_id] 
-                    for pp in np.arange(len(all_scores)) if len(all_scores[pp][cls_id]) != 0]
+                    for pp in np.arange(len(all_scores)) if cls_id < len(all_scores[pp]) and len(all_scores[pp][cls_id]) != 0]
         mer_cls_scores.append(np.concatenate(cls_part, axis=0) if cls_part else [])
 
 
@@ -409,14 +409,14 @@ class RotatedTwoStageDetector_Mul(nn.Module):
             backbone.pretrained = pretrained
 
         self.backbone = build_backbone(backbone)
-        self.backbone_d2=build_backbone(backbone)
+        self.backbone_d2 = self.backbone
  
         ori_cfg  =  ori_cfg if  ori_cfg else init_cfg
         self.ori_cfg = ori_cfg if  ori_cfg else init_cfg
 
         if neck is not None:
             self.neck = build_neck(neck)
-            self.neck_d2 = build_neck(neck)
+            self.neck_d2 = self.neck
 
 
         if rpn_head is not None:
@@ -425,7 +425,7 @@ class RotatedTwoStageDetector_Mul(nn.Module):
             rpn_head_.update(train_cfg=rpn_train_cfg, test_cfg=test_cfg.rpn)
 
             self.rpn_head = build_head(rpn_head_)
-            self.rpn_head_d2 = build_head(rpn_head_)
+            self.rpn_head_d2 = self.rpn_head
 
         from maskrcnn_benchmark.modeling.roi_heads.roi_heads import build_roi_heads
         self.roi_heads = build_roi_heads(ori_cfg, ori_cfg.MODEL.RESNETS.BACKBONE_OUT_CHANNELS)
@@ -439,7 +439,7 @@ class RotatedTwoStageDetector_Mul(nn.Module):
             roi_head.pretrained = pretrained
 
             self.roi_head = build_head(roi_head)
-            self.roi_head_d2 = build_head(roi_head)
+            self.roi_head_d2 = self.roi_head
         
 
         self.train_cfg = train_cfg
@@ -847,6 +847,10 @@ class RotatedTwoStageDetector_Mul(nn.Module):
 
 
     def batch(self,img,targets):
+            """对单张图像跑检测并构造关系头可用的 proposals。
+
+            当检测结果为空时，返回一个包含单个背景框的 proposals，避免下游关系采样/特征提取因空输入报错。
+            """
             imgs = [img]
             if  not self.training:
                 img_metas = [[targets[0].extra_fields["data"]["img_metas"][0].data]]
@@ -1025,7 +1029,23 @@ class RotatedTwoStageDetector_Mul(nn.Module):
             np_en = [f2 for f2 in f_en if len(f2) != 0]
 
             if len(no_f_results) == 0:
-                return 666,None
+                proposals = copy.deepcopy(targets[0])
+                device = proposals.bbox.device
+                num_classes = int(self.ori_cfg.MODEL.ROI_BOX_HEAD.NUM_CLASSES)
+
+                proposals.bbox = torch.zeros((1, 5), device=device, dtype=proposals.bbox.dtype)
+                proposals.extra_fields["predict_logits"] = torch.zeros((1, num_classes), device=device, dtype=torch.float32)
+                proposals.extra_fields["boxes_per_cls"] = torch.zeros((1, num_classes, 5), device=device, dtype=torch.float32)
+                proposals.add_field("labels", torch.zeros((1,), device=device, dtype=torch.int64))
+                proposals.extra_fields["pred_labels"] = torch.zeros((1,), device=device, dtype=torch.int64)
+                proposals.add_field("pred_scores", torch.zeros((1,), device=device, dtype=torch.float32))
+
+                for key in ["data1", "target1", "relation"]:
+                    if key in proposals.extra_fields:
+                        del proposals.extra_fields[key]
+
+                default_scale = [1.0, 1.0, 1.0] if (not self.training) else None
+                return proposals, default_scale
             else:
                 all_box = torch.tensor(np.concatenate(no_f_results,axis=0)).cuda()
 
@@ -1153,7 +1173,18 @@ class RotatedTwoStageDetector_Mul(nn.Module):
     def forward(self, img, targets=None, logger=None, ite=None,  gt_bboxes_ignore=None, gt_masks=None, proposals=None, sgd_data = None, MUL = None,m = None,val = None,
                 vae = None, bce = None, **kwargs): 
  
+        if not hasattr(img, "tensors"):
+            if isinstance(img, (list, tuple)) and len(img) == 1 and torch.is_tensor(img[0]) and img[0].dim() == 4:
+                img = img[0]
+            img = to_image_list(img)
         imgs = img.tensors
+        img_metas = kwargs.get("img_metas")
+        return_loss = kwargs.get("return_loss", False)
+        if targets is None and img_metas is not None and not return_loss:
+            if isinstance(img_metas, list) and len(img_metas) == 1 and isinstance(img_metas[0], list):
+                img_metas = img_metas[0]
+            det_results, _, _ = self.simple_test(imgs, img_metas, rescale=kwargs.get("rescale", False))
+            return det_results
 
         if self.tasks == "Predcls":  
             losses = dict()
