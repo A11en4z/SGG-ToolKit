@@ -952,6 +952,12 @@ class BCKM(RPCM):
 
     def forward(self, proposals, rel_pair_idxs, rel_labels, rel_binarys, roi_features, union_features, logger=None):
         """BCKM 整体前向：融合阶段（可选 v1）+ 原型阶段（复用 RPCM）。"""
+        if torch.isnan(self.linear_sub.weight).any():
+            print("[BCKM][nan_guard] CRITICAL: self.linear_sub.weight contains NaN! Model parameters are corrupted.")
+        for name, param in self.W_sub.named_parameters():
+            if torch.isnan(param).any():
+                print(f"[BCKM][nan_guard] CRITICAL: self.W_sub.{name} contains NaN! Model parameters are corrupted.")
+                break
         entity_dists, entity_preds, rel_rep1, num_objs, num_rels, pair_pred, add_losses = self.forward_fusion_legacy(
             proposals,
             rel_pair_idxs,
@@ -1063,6 +1069,16 @@ class BCKM(RPCM):
             sub = self.norm_sub(self.dropout_sub(torch.relu(self.linear_sub(sub))) + sub)
             obj = self.norm_obj(self.dropout_obj(torch.relu(self.linear_obj(obj))) + obj)
 
+            if torch.isnan(sub).any():
+                print("[BCKM][nan_guard] sub features contain NaN before clamp! Resetting.")
+                sub = torch.where(torch.isnan(sub), torch.zeros_like(sub), sub)
+            if torch.isnan(obj).any():
+                print("[BCKM][nan_guard] obj features contain NaN before clamp! Resetting.")
+                obj = torch.where(torch.isnan(obj), torch.zeros_like(obj), obj)
+
+            sub = sub.clamp(min=-20, max=20)
+            obj = obj.clamp(min=-20, max=20)
+
             t_s_list.append(sub)
             t_o_list.append(obj)
             pair_preds.append(torch.stack((entity_pred_i[pair_idx[:, 0]], entity_pred_i[pair_idx[:, 1]]), dim=1))
@@ -1070,6 +1086,15 @@ class BCKM(RPCM):
         t_s0 = cat(t_s_list, dim=0)
         t_o0 = cat(t_o_list, dim=0)
         pair_pred = cat(pair_preds, dim=0)
+
+        if torch.isnan(t_s0).any():
+            print("[BCKM][nan_guard] t_s0 contains NaN before clamp! Resetting.")
+            t_s0 = torch.where(torch.isnan(t_s0), torch.zeros_like(t_s0), t_s0)
+        if torch.isnan(t_o0).any():
+            print("[BCKM][nan_guard] t_o0 contains NaN before clamp! Resetting.")
+            t_o0 = torch.where(torch.isnan(t_o0), torch.zeros_like(t_o0), t_o0)
+        t_s0 = t_s0.clamp(min=-20, max=20)
+        t_o0 = t_o0.clamp(min=-20, max=20)
 
         # tU 的语义来源：对 union_features 下采样后做 vis2sem 得到 sem_pred（即 h(xu)）
         sem_pred = self.vis2sem(self.down_samp(union_features))
@@ -1097,7 +1122,18 @@ class BCKM(RPCM):
                 t_s1, t_o1, t_u1 = tokens[0], tokens[1], tokens[2]
                 if fusion_type == "v2":
                     t_u1 = self._inject_soft_knowledge(t_u1)
+                if torch.isnan(t_s1).any():
+                    print("[BCKM][nan_guard] t_s1 contains NaN before clamp! Resetting.")
+                    t_s1 = torch.where(torch.isnan(t_s1), torch.zeros_like(t_s1), t_s1)
+                if torch.isnan(t_o1).any():
+                    print("[BCKM][nan_guard] t_o1 contains NaN before clamp! Resetting.")
+                    t_o1 = torch.where(torch.isnan(t_o1), torch.zeros_like(t_o1), t_o1)
+                t_s1 = t_s1.clamp(min=-20, max=20)
+                t_o1 = t_o1.clamp(min=-20, max=20)
                 fusion_so = fusion_func(t_s1, t_o1)
+                if not torch.isfinite(fusion_so).all():
+                    print("[BCKM][nan_guard] fusion_so contains NaN! Replaced with zeros.")
+                    fusion_so = torch.where(torch.isfinite(fusion_so), fusion_so, torch.zeros_like(fusion_so))
 
                 # Step F: 有符号门控反证据
                 # alpha = tanh(MLP([fusion_so, tU]))，逐维取值范围 [-1,1]
@@ -1106,6 +1142,9 @@ class BCKM(RPCM):
         else:
             # legacy：保持 RPCM 的反证据形式（固定为减法 + sigmoid gate）
             fusion_so = fusion_func(t_s0, t_o0)
+            if not torch.isfinite(fusion_so).all():
+                print("[BCKM][nan_guard] fusion_so contains NaN! Replaced with zeros.")
+                fusion_so = torch.where(torch.isfinite(fusion_so), fusion_so, torch.zeros_like(fusion_so))
             gate_sem_pred = torch.sigmoid(self.gate_pred(cat((fusion_so, sem_pred), dim=-1)))
             rel_rep1 = fusion_so - sem_pred * gate_sem_pred
 
