@@ -17,7 +17,7 @@ ENV_PREFIX="$("${PYTHON_CMD[@]}" -c "import sys; print(sys.prefix)")"
 TORCH_LIB_DIR="$("${PYTHON_CMD[@]}" -c "import os,torch; print(os.path.join(os.path.dirname(torch.__file__), \"lib\"))")"
 export LD_LIBRARY_PATH="${ENV_PREFIX}/lib:${TORCH_LIB_DIR}:${LD_LIBRARY_PATH}"
 
-WEIGHTS="/gz-data/SGG-ToolKit/Checkpoints/LOBB_RPCM_predcls_train_20260105_152516/best_epoch.pth"
+WEIGHTS="/gz-data/SGG-ToolKit/Checkpoints/STAR-Ship/predcls/DIOR_RPCM_predcls_train_seed9891_20260301_013855/16000.pth"
 MMCONFIG="configs/RSOBB/DIOR_obb_predcls_sgcls_swinl_800.py"
 
 if [ ! -f "$WEIGHTS" ]; then
@@ -50,7 +50,7 @@ mkdir -p "$path"
   MODEL.ROI_RELATION_HEAD.PREDICTOR RPCM \
   DTYPE "float32" \
   GLOVE_DIR glove \
-  SOLVER.IMS_PER_BATCH 16 TEST.IMS_PER_BATCH $NUM_GUP \
+  SOLVER.IMS_PER_BATCH 1 TEST.IMS_PER_BATCH $NUM_GUP \
   OUTPUT_DIR "$path" \
   Type "Large_RS_OBB" \
   filter_method "PPG" \

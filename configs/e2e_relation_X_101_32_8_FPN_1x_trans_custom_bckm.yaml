@@ -102,13 +102,15 @@ MODEL:
     ################# Parameters for BCKM Predictor ##################
     BCKM:
       FUSION_TYPE: "v2"  # "legacy" | "v1" | "v2"
-      USE_KNOWLEDGE: True  # True | False
+      USE_KNOWLEDGE: False  # True | False
       KNOWLEDGE_DIM: 768  # 768 (CLIP 原型维度)
       KNOWLEDGE_DROP: 0.1  # Cross-Attn dropout
-      PROTOTYPE_TYPE: "clip_residual"  # "glove" | "clip_residual"
+      PROTOTYPE_TYPE: "glove"  # "glove" | "clip_residual"
       PROTOTYPE_RESIDUAL_L2_WEIGHT: 0.0  # >0 可约束 delta 幅度（只作用于非 bg）
       PROTOTYPE_DIST_LOSS2_2_WEIGHT: 0.01  # clip_residual 下对 dist_loss2_2 的缩放系数；0.0 相当于关闭
       PROTOTYPE_DIST_LOSS2_EXCLUDE_BG: True  # True: dist_loss2_2 计算中排除 bg(0)
+      USE_PRIOR_LOGIT_BIAS: False
+      
     ################# Parameters for Motif Predictor ##################
     CONTEXT_OBJ_LAYER: 1
     CONTEXT_REL_LAYER: 1
@@ -224,7 +226,7 @@ TEST:
     SYNC_GATHER: True      # turn on will slow down the evaluation to solve the sgdet test out of memory problem
     REQUIRE_OVERLAP: False
     LATER_NMS_PREDICTION_THRES: 0.5
-    RECALL_K: (20, 50, 100)
+    RECALL_K: (20, 50, 100, 200, 500)
   CUSTUM_EVAL: False       # eval SGDet model on custum images, output a json
   CUSTUM_PATH: '.'         # the folder that contains the custum images, only jpg files are allowed  
 

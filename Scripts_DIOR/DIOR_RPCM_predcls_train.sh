@@ -17,7 +17,7 @@ ENV_PREFIX="$("${PYTHON_CMD[@]}" -c "import sys; print(sys.prefix)")"
 TORCH_LIB_DIR="$("${PYTHON_CMD[@]}" -c "import os,torch; print(os.path.join(os.path.dirname(torch.__file__), \"lib\"))")"
 export LD_LIBRARY_PATH="${ENV_PREFIX}/lib:${TORCH_LIB_DIR}:${LD_LIBRARY_PATH}"
 
-PRETRAIN_WEIGHTS="/gz-data/mmrotate/work_dirs/oriented_rcnn_swin-l_fpn_1x_star_le90/best_mAP_epoch_21.pth"
+PRETRAIN_WEIGHTS="/gz-data/mmrotate/work_dirs/oriented_rcnn_swin-l_fpn_1x_star_le90_STARSHIP/best_mAP_epoch_23.pth"
 MMCONFIG="configs/RSOBB/DIOR_obb_predcls_sgcls_swinl_800.py"
 
 if [ ! -f "$PRETRAIN_WEIGHTS" ]; then
@@ -35,7 +35,7 @@ export SEED="${SEED:-9891}"
 
 START_TIME="$(date "+%Y%m%d_%H%M%S")"
 MODEL_NAME="DIOR_RPCM_predcls_train_seed${SEED}_${START_TIME}"
-path="./Checkpoints/${MODEL_NAME}/"
+path="./Checkpoints/STAR-Ship/predcls/${MODEL_NAME}/"
 mkdir -p "$path"
 
 TB_LOGDIR="${path}/tb"
@@ -80,18 +80,18 @@ trap cleanup_tensorboard EXIT
   MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL True \
   MODEL.ROI_RELATION_HEAD.PREDICT_USE_BIAS False \
   MODEL.ROI_RELATION_HEAD.PREDICTOR RPCM \
-  MODEL.ROI_BOX_HEAD.NUM_CLASSES 21 \
-  MODEL.ROI_RELATION_HEAD.NUM_CLASSES 23 \
+  MODEL.ROI_BOX_HEAD.NUM_CLASSES 31 \
+  MODEL.ROI_RELATION_HEAD.NUM_CLASSES 42 \
   MODEL.ROI_ATTRIBUTE_HEAD.NUM_ATTRIBUTES 2 \
   SOLVER.WARMUP_ITERS 500 \
   DTYPE "float32" \
   GLOVE_DIR glove \
-  SOLVER.IMS_PER_BATCH 16 TEST.IMS_PER_BATCH $NUM_GUP \
-  SOLVER.MAX_ITER 20000 SOLVER.BASE_LR 1e-3 \
+  SOLVER.IMS_PER_BATCH 8 TEST.IMS_PER_BATCH $NUM_GUP \
+  SOLVER.MAX_ITER 16000 SOLVER.BASE_LR 1e-3 \
   SOLVER.SCHEDULE.TYPE WarmupMultiStepLR \
   MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
-  SOLVER.STEPS "(13000, 18000)" SOLVER.VAL_PERIOD 1000 \
-  SOLVER.CHECKPOINT_PERIOD 1000 \
+  SOLVER.STEPS "(10000, 14000)" SOLVER.VAL_PERIOD 2000 \
+  SOLVER.CHECKPOINT_PERIOD 2000 \
   val_outpath "$path/inference/val" \
   test_outpath "$path/inference/test" \
   OUTPUT_DIR "$path" \

@@ -7,7 +7,7 @@ import copy
 #
 class DatasetCatalog(object):
     # configure your dataset root here
-    DATA_DIR = "/gz-data/DIOR_STAR/"
+    DATA_DIR = "/gz-data/vg_remove200_DIOR_STAR_use4_SGG/"
     DATASETS = {
         "coco_2017_train": {
             "img_dir": "coco/train2017",
@@ -128,10 +128,10 @@ class DatasetCatalog(object):
             "image_file": "vg/image_data.json",
         },
          "STAR_with_attribute": {
-            "img_dir": "STAR_img",
-            "roidb_file": "STAR-SGG-with-attri.h5",
-            "dict_file": "STAR-SGG-dicts-with-attri.json",
-            "image_file": "STAR_image_data_v1.json",
+            "img_dir": "images",
+            "roidb_file": "DIOR-SGG-with-attri.h5",
+            "dict_file": "DIOR-SGG-dicts-with-attri.json",
+            "image_file": "DIOR_image_data_v1.json",
         },  
         "DIOR_with_attribute": {
             "img_dir": "images",

@@ -1,5 +1,5 @@
 dataset_type = 'DOTADataset'
-data_root = '/gz-data/DIOR_STAR/'
+data_root = '/gz-data/vg_remove200_DIOR_STAR_use4_SGG/'
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 
@@ -46,11 +46,16 @@ data = dict(
     workers_per_gpu=2,
     train=dict(
         type=dataset_type,
-        ann_file='/gz-data/DIOR_STAR/DIOR_STAR/train/labelTxt/',
-        img_prefix='/gz-data/DIOR_STAR/images/',
+        ann_file='/gz-data/vg_remove200_DIOR_STAR_use4_SGG/STAR-Ship/train/labelTxt/',
+        img_prefix='/gz-data/vg_remove200_DIOR_STAR_use4_SGG/images/',
         pipeline=[
             dict(type='LoadImageFromFile'),
             dict(type='LoadAnnotations', with_bbox=True),
+            dict(
+                type='RRandomFlip',
+                flip_ratio=[0.25, 0.25, 0.25],
+                direction=['horizontal', 'vertical', 'diagonal'],
+                version='le90'),
             dict(
                 type='Normalize',
                 mean=[123.675, 116.28, 103.53],
@@ -63,14 +68,14 @@ data = dict(
         version='le90'),
     val=dict(
         type=dataset_type,
-        ann_file='/gz-data/DIOR_STAR/DIOR_STAR/val/labelTxt/',
-        img_prefix='/gz-data/DIOR_STAR/images/',
+        ann_file='/gz-data/vg_remove200_DIOR_STAR_use4_SGG/STAR-Ship/test/labelTxt/',
+        img_prefix='/gz-data/vg_remove200_DIOR_STAR_use4_SGG/images/',
         pipeline=test_pipeline,
         version='le90'),
     test=dict(
         type=dataset_type,
-        ann_file='/gz-data/DIOR_STAR/DIOR_STAR/test/labelTxt/',
-        img_prefix='/gz-data/DIOR_STAR/images/',
+        ann_file='/gz-data/vg_remove200_DIOR_STAR_use4_SGG/STAR-Ship/test/labelTxt/',
+        img_prefix='/gz-data/vg_remove200_DIOR_STAR_use4_SGG/images/',
         pipeline=test_pipeline,
         version='le90'))
 
@@ -166,7 +171,7 @@ model = dict(
             in_channels=256,
             fc_out_channels=1024,
             roi_feat_size=7,
-            num_classes=20,
+            num_classes=30,
             bbox_coder=dict(
                 type='DeltaXYWHAOBBoxCoder',
                 angle_range='le90',
